@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}Config - NHI Librarian{% endblock %}
+{% block content %}
+<h1>Metadata Configuration</h1>
+
+<div class="config-tabs">
+    <button class="config-tab active" data-tab="visual" type="button">Visual Editor</button>
+    <button class="config-tab" data-tab="json" type="button">Raw JSON</button>
+</div>
+
+<!-- Visual Editor Panel -->
+<div class="config-panel" id="panel-visual">
+    <div class="card">
+        <h2>General Settings</h2>
+        <table class="config-table">
+            <tbody>
+                <tr>
+                    <th>Scan Directories</th>
+                    <td><input type="text" id="cfg-scan-dirs" value="{{ config.get('scan_directories', ['.'])|join(', ') }}">
+                    <span class="hint">Comma-separated paths</span></td>
+                </tr>
+                <tr>
+                    <th>File Extensions</th>
+                    <td><input type="text" id="cfg-extensions" value="{{ config.get('file_extensions', ['.pdf'])|join(', ') }}">
+                    <span class="hint">Comma-separated, e.g. .pdf, .docx</span></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h2>Metadata Fields</h2>
+        <table class="config-table" id="fields-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Required</th>
+                    <th>Default</th>
+                    <th>Choices <span class="hint">(for choice type)</span></th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for field in config.get('fields', []) %}
+                <tr class="field-row">
+                    <td><input type="text" class="f-name" value="{{ field.name }}"></td>
+                    <td>
+                        <select class="f-type">
+                            <option value="text" {% if field.type == 'text' %}selected{% endif %}>text</option>
+                            <option value="choice" {% if field.type == 'choice' %}selected{% endif %}>choice</option>
+                            <option value="list" {% if field.type == 'list' %}selected{% endif %}>list</option>
+                        </select>
+                    </td>
+                    <td><input type="checkbox" class="f-required" {% if field.get('required') %}checked{% endif %}></td>
+                    <td><input type="text" class="f-default" value="{{ field.get('default', '') if field.get('default', '') is string else field.get('default', [])|join(', ') }}"></td>
+                    <td><input type="text" class="f-choices" value="{{ field.get('choices', [])|join(', ') }}" {% if field.type != 'choice' %}disabled{% endif %}></td>
+                    <td><button type="button" class="btn btn-danger btn-sm remove-field-btn">&times;</button></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <button type="button" class="btn btn-success btn-sm" id="add-field-btn" style="margin-top:0.5rem;">+ Add Field</button>
+    </div>
+
+    <div style="margin-top:1rem;">
+        <button class="btn btn-primary" type="button" id="save-visual-btn">Save</button>
+        <a href="{{ url_for('index') }}" class="btn btn-secondary">Cancel</a>
+    </div>
+</div>
+
+<!-- Raw JSON Panel -->
+<div class="config-panel hidden" id="panel-json">
+    <form method="post">
+        <div class="form-group">
+            <label>Configuration (JSON)</label>
+            <textarea name="config_json" rows="20" id="json-textarea">{{ config_json }}</textarea>
+        </div>
+        <button class="btn btn-primary" type="submit">Save</button>
+        <a href="{{ url_for('index') }}" class="btn btn-secondary">Cancel</a>
+    </form>
+</div>
+
+<script>
+(function() {
+    /* Tab switching */
+    var tabs = document.querySelectorAll('.config-tab');
+    tabs.forEach(function(tab) {
+        tab.addEventListener('click', function() {
+            tabs.forEach(function(t) { t.classList.remove('active'); });
+            tab.classList.add('active');
+            document.querySelectorAll('.config-panel').forEach(function(p) { p.classList.add('hidden'); });
+            document.getElementById('panel-' + tab.dataset.tab).classList.remove('hidden');
+            /* Sync visual -> JSON when switching to JSON tab */
+            if (tab.dataset.tab === 'json') {
+                document.getElementById('json-textarea').value = JSON.stringify(buildConfig(), null, 2);
+            }
+        });
+    });
+
+    /* Enable/disable choices input based on type */
+    document.getElementById('fields-table').addEventListener('change', function(e) {
+        if (e.target.classList.contains('f-type')) {
+            var row = e.target.closest('tr');
+            row.querySelector('.f-choices').disabled = (e.target.value !== 'choice');
+        }
+    });
+
+    /* Remove field row */
+    document.getElementById('fields-table').addEventListener('click', function(e) {
+        if (e.target.classList.contains('remove-field-btn')) {
+            e.target.closest('tr').remove();
+        }
+    });
+
+    /* Add field row */
+    document.getElementById('add-field-btn').addEventListener('click', function() {
+        var tbody = document.querySelector('#fields-table tbody');
+        var tr = document.createElement('tr');
+        tr.className = 'field-row';
+        tr.innerHTML =
+            '<td><input type="text" class="f-name" value=""></td>' +
+            '<td><select class="f-type"><option value="text" selected>text</option><option value="choice">choice</option><option value="list">list</option></select></td>' +
+            '<td><input type="checkbox" class="f-required"></td>' +
+            '<td><input type="text" class="f-default" value=""></td>' +
+            '<td><input type="text" class="f-choices" value="" disabled></td>' +
+            '<td><button type="button" class="btn btn-danger btn-sm remove-field-btn">&times;</button></td>';
+        tbody.appendChild(tr);
+    });
+
+    /* Build config object from visual editor */
+    function buildConfig() {
+        var scanDirs = document.getElementById('cfg-scan-dirs').value.split(',').map(function(s){return s.trim();}).filter(Boolean);
+        var exts = document.getElementById('cfg-extensions').value.split(',').map(function(s){return s.trim();}).filter(Boolean);
+        var fields = [];
+        document.querySelectorAll('#fields-table .field-row').forEach(function(row) {
+            var name = row.querySelector('.f-name').value.trim();
+            if (!name) return;
+            var type = row.querySelector('.f-type').value;
+            var req = row.querySelector('.f-required').checked;
+            var defVal = row.querySelector('.f-default').value.trim();
+            var field = {name: name, type: type, required: req};
+            if (type === 'list') {
+                field['default'] = defVal ? defVal.split(',').map(function(s){return s.trim();}) : [];
+            } else {
+                field['default'] = defVal;
+            }
+            if (type === 'choice') {
+                field.choices = row.querySelector('.f-choices').value.split(',').map(function(s){return s.trim();}).filter(Boolean);
+            }
+            fields.push(field);
+        });
+        return {scan_directories: scanDirs, file_extensions: exts, fields: fields};
+    }
+
+    /* Save via visual editor — submit as JSON through the form */
+    document.getElementById('save-visual-btn').addEventListener('click', function() {
+        var textarea = document.getElementById('json-textarea');
+        textarea.value = JSON.stringify(buildConfig(), null, 2);
+        textarea.closest('form').submit();
+    });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}{{ entry.filename }} - NHI Librarian{% endblock %}
+{% block content %}
+
+{% if edit_mode %}
+<h1>Edit: {{ entry.filename }}</h1>
+<form method="post">
+    <div class="card">
+        <dl>
+            <dt>Hash</dt><dd>{{ entry.file_hash }}</dd>
+            <dt>Path</dt><dd>{{ entry.rel_path }}</dd>
+            <dt>Size</dt><dd>{{ "{:,}".format(entry.file_size) }} bytes</dd>
+        </dl>
+    </div>
+
+    {% for field_def in fields %}
+    <div class="form-group">
+        <label>{{ field_def.name }}{% if field_def.get('required') %} *{% endif %}</label>
+        {% if field_def.type == 'choice' %}
+        <select name="{{ field_def.name }}">
+            <option value="">-- select --</option>
+            {% for ch in field_def.get('choices', []) %}
+            <option value="{{ ch }}" {% if entry.metadata.get(field_def.name) == ch %}selected{% endif %}>{{ ch }}</option>
+            {% endfor %}
+        </select>
+        {% elif field_def.type == 'list' %}
+        <input type="text" name="{{ field_def.name }}" value="{{ entry.metadata.get(field_def.name, '')|join(', ') if entry.metadata.get(field_def.name, '') is iterable and entry.metadata.get(field_def.name, '') is not string else entry.metadata.get(field_def.name, '') }}" placeholder="Comma-separated values">
+        {% else %}
+        <input type="text" name="{{ field_def.name }}" value="{{ entry.metadata.get(field_def.name, '') }}">
+        {% endif %}
+    </div>
+    {% endfor %}
+
+    <button class="btn btn-primary" type="submit">Save</button>
+    <a href="{{ url_for('detail', hash_prefix=entry.file_hash) }}" class="btn btn-secondary">Cancel</a>
+</form>
+
+{% else %}
+<h1>{{ entry.filename }}</h1>
+<div class="card">
+    <dl>
+        <dt>Hash</dt><dd>{{ entry.file_hash }}</dd>
+        <dt>Filename</dt><dd>{{ entry.filename }}</dd>
+        <dt>Path</dt><dd>{{ entry.rel_path }}</dd>
+        <dt>Size</dt><dd>{{ "{:,}".format(entry.file_size) }} bytes</dd>
+        <dt>Added</dt><dd>{{ entry.date_added }}</dd>
+        <dt>Modified</dt><dd>{{ entry.date_modified }}</dd>
+        <dt>Status</dt>
+        <dd>
+            {% if entry.missing %}
+                <span class="status-missing">MISSING</span>
+            {% else %}
+                <span class="status-present">Present</span>
+            {% endif %}
+        </dd>
+    </dl>
+</div>
+
+<div class="card">
+    <h2>Metadata</h2>
+    <dl>
+        {% for field_def in fields %}
+        <dt>{{ field_def.name }}</dt>
+        <dd>{{ entry.metadata.get(field_def.name, '-') or '-' }}</dd>
+        {% endfor %}
+    </dl>
+</div>
+
+<a href="{{ url_for('edit_entry', hash_prefix=entry.file_hash) }}" class="btn btn-primary">Edit</a>
+<form action="{{ url_for('delete_entry_route', hash_prefix=entry.file_hash) }}" method="post" style="display:inline" onsubmit="return confirm('Delete this entry?');">
+    <button class="btn btn-danger" type="submit">Delete</button>
+</form>
+<a href="{{ url_for('index') }}" class="btn btn-secondary">Back</a>
+{% endif %}
+
+{% endblock %}

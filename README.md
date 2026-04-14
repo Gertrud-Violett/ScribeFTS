@@ -79,4 +79,4 @@ This project is licensed under the BSD 2-Clause License. See [LICENSE](LICENSE) 
 
 ## Contributing
 
-Contributions are welcome. Please open an issue to discuss proposed changes before submitting a pull request.
+Contributions are welcome. Please open an issue to discuss proposed changes before submitting a pull request. Your are free to fork and redistribute this project under the same license.

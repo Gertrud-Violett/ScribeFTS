@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}Library - NHI Librarian{% endblock %}
+{% block content %}
+<h1>Library</h1>
+
+<div class="action-bar">
+    <form class="search-bar" action="{{ url_for('search') }}" method="get">
+        <input type="text" name="q" placeholder="Search by filename, title, or keywords..." value="{{ query|default('') }}">
+        <button class="btn btn-primary" type="submit">Search</button>
+    </form>
+    <form action="{{ url_for('delete_old') }}" method="post" onsubmit="return confirm('Remove all MISSING entries?');">
+        <button class="btn btn-danger btn-sm" type="submit">Delete Old</button>
+    </form>
+    <form action="{{ url_for('do_export') }}" method="post">
+        <button class="btn btn-secondary btn-sm" type="submit">Export JSON</button>
+    </form>
+</div>
+
+{% if entries %}
+<div class="list-controls">
+    <div class="list-height-control">
+        <label for="list-height-slider">List height:</label>
+        <input type="range" id="list-height-slider" min="200" max="1200" value="500" step="50">
+        <span id="list-height-value">500px</span>
+    </div>
+    <div class="list-height-control">
+        <label for="row-height-slider">Row height:</label>
+        <input type="range" id="row-height-slider" min="24" max="72" value="36" step="4">
+        <span id="row-height-value">36px</span>
+    </div>
+</div>
+<div class="library-list" id="library-list">
+<table id="library-table">
+    <thead>
+        <tr>
+            <th><a href="{{ url_for(view_name, sort='filename', q=query|default('')) }}">Filename</a></th>
+            <th>Genre</th>
+            <th>Actions</th>
+            <th>Status</th>
+            <th><a href="{{ url_for(view_name, sort='rel_path', q=query|default('')) }}">Path</a></th>
+            <th>Keywords</th>
+        </tr>
+        <tr class="filter-row">
+            <td><input type="text" class="col-filter" data-col="0" placeholder="Filter..."></td>
+            <td><input type="text" class="col-filter" data-col="1" placeholder="Filter..."></td>
+            <td></td>
+            <td>
+                <select class="col-filter-select" data-col="3">
+                    <option value="">All</option>
+                    <option value="OK">OK</option>
+                    <option value="MISSING">MISSING</option>
+                </select>
+            </td>
+            <td><input type="text" class="col-filter" data-col="4" placeholder="Filter..."></td>
+            <td><input type="text" class="col-filter" data-col="5" placeholder="Filter..."></td>
+        </tr>
+    </thead>
+    <tbody>
+        {% for entry in entries %}
+        <tr>
+            <td><a href="{{ url_for('detail', hash_prefix=entry.file_hash) }}">{{ entry.filename }}</a></td>
+            <td>{{ entry.metadata.get('genre', '') }}</td>
+            <td class="actions-cell">
+                <a href="{{ url_for('edit_entry', hash_prefix=entry.file_hash) }}" class="btn btn-primary btn-sm">Edit</a>
+                <form action="{{ url_for('delete_entry_route', hash_prefix=entry.file_hash) }}" method="post" style="display:inline" onsubmit="return confirm('Delete this entry?');">
+                    <button class="btn btn-danger btn-sm" type="submit">Delete</button>
+                </form>
+            </td>
+            <td>
+                {% if entry.missing %}
+                    <span class="status-missing">MISSING</span>
+                {% else %}
+                    <span class="status-present">OK</span>
+                {% endif %}
+            </td>
+            <td>{{ entry.rel_path }}</td>
+            <td>{{ entry.metadata.get('keywords', [])|join(', ') if entry.metadata.get('keywords', []) is iterable and entry.metadata.get('keywords', []) is not string else entry.metadata.get('keywords', '') }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+<p id="entry-count" style="margin-top:0.5rem;color:var(--text-muted);">{{ entries|length }} entry/entries</p>
+
+<script>
+(function() {
+    /* List height slider */
+    var listSlider = document.getElementById('list-height-slider');
+    var listLabel = document.getElementById('list-height-value');
+    var list = document.getElementById('library-list');
+    var storedList = localStorage.getItem('nhi-list-height');
+    if (storedList) { listSlider.value = storedList; }
+    function applyListHeight() {
+        var v = listSlider.value;
+        list.style.maxHeight = v + 'px';
+        listLabel.textContent = v + 'px';
+        localStorage.setItem('nhi-list-height', v);
+    }
+    listSlider.addEventListener('input', applyListHeight);
+    applyListHeight();
+
+    /* Row height slider */
+    var rowSlider = document.getElementById('row-height-slider');
+    var rowLabel = document.getElementById('row-height-value');
+    var storedRow = localStorage.getItem('nhi-row-height');
+    if (storedRow) { rowSlider.value = storedRow; }
+    function applyRowHeight() {
+        var v = rowSlider.value;
+        rowLabel.textContent = v + 'px';
+        localStorage.setItem('nhi-row-height', v);
+        var rows = document.querySelectorAll('#library-table tbody tr');
+        for (var i = 0; i < rows.length; i++) {
+            rows[i].style.height = v + 'px';
+            var cells = rows[i].querySelectorAll('td');
+            var pad = Math.max(2, Math.round((v - 16) / 4));
+            for (var j = 0; j < cells.length; j++) {
+                cells[j].style.paddingTop = pad + 'px';
+                cells[j].style.paddingBottom = pad + 'px';
+            }
+        }
+    }
+    rowSlider.addEventListener('input', applyRowHeight);
+    applyRowHeight();
+
+    /* Column filters */
+    var filters = document.querySelectorAll('.col-filter');
+    var selectFilters = document.querySelectorAll('.col-filter-select');
+    var tbody = document.querySelector('#library-table tbody');
+    var allRows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+    var countEl = document.getElementById('entry-count');
+    var total = allRows.length;
+
+    function applyFilters() {
+        var visible = 0;
+        allRows.forEach(function(row) {
+            var cells = row.querySelectorAll('td');
+            var show = true;
+            filters.forEach(function(f) {
+                var col = parseInt(f.dataset.col);
+                var val = f.value.toLowerCase();
+                if (val && cells[col]) {
+                    var text = cells[col].textContent.toLowerCase();
+                    if (text.indexOf(val) === -1) show = false;
+                }
+            });
+            selectFilters.forEach(function(f) {
+                var col = parseInt(f.dataset.col);
+                var val = f.value;
+                if (val && cells[col]) {
+                    var text = cells[col].textContent.trim();
+                    if (text !== val) show = false;
+                }
+            });
+            row.style.display = show ? '' : 'none';
+            if (show) visible++;
+        });
+        countEl.textContent = visible + ' of ' + total + ' entry/entries';
+    }
+
+    filters.forEach(function(f) { f.addEventListener('input', applyFilters); });
+    selectFilters.forEach(function(f) { f.addEventListener('change', applyFilters); });
+})();
+</script>
+{% else %}
+<p>No entries found.</p>
+{% endif %}
+{% endblock %}

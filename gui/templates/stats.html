@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Stats - NHI Librarian{% endblock %}
+{% block content %}
+<h1>Statistics</h1>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="number">{{ total }}</div>
+        <div class="label">Total Entries</div>
+    </div>
+    <div class="stat-card">
+        <div class="number">{{ present }}</div>
+        <div class="label">Present</div>
+    </div>
+    <div class="stat-card">
+        <div class="number">{{ missing }}</div>
+        <div class="label">Missing</div>
+    </div>
+</div>
+
+{% if genre_counts %}
+<div class="card">
+    <h2>By Genre</h2>
+    <table>
+        <thead><tr><th>Genre</th><th>Count</th></tr></thead>
+        <tbody>
+            {% for genre, count in genre_counts %}
+            <tr><td>{{ genre }}</td><td>{{ count }}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if author_counts %}
+<div class="card">
+    <h2>By Author</h2>
+    <table>
+        <thead><tr><th>Author</th><th>Count</th></tr></thead>
+        <tbody>
+            {% for author, count in author_counts %}
+            <tr><td>{{ author }}</td><td>{{ count }}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if year_counts %}
+<div class="card">
+    <h2>By Year</h2>
+    <table>
+        <thead><tr><th>Year</th><th>Count</th></tr></thead>
+        <tbody>
+            {% for year, count in year_counts %}
+            <tr><td>{{ year }}</td><td>{{ count }}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{% if keyword_counts %}
+<div class="card">
+    <h2>By Keyword</h2>
+    <table>
+        <thead><tr><th>Keyword</th><th>Count</th></tr></thead>
+        <tbody>
+            {% for keyword, count in keyword_counts %}
+            <tr><td>{{ keyword }}</td><td>{{ count }}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

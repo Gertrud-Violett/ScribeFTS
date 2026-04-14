@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-NHI Librarian is a lightweight CLI-based document cataloging tool that scans a designated directory tree for files matching configurable extensions (default: `.pdf`), assigns configurable metadata, and stores everything in a local SQLite database. Metadata field definitions are kept in an editable JSON file. The core logic is exposed as a Python API so future interfaces (Jupyter notebooks, web dashboards) can import and use it directly.
+NHI Librarian is a lightweight document cataloging tool that scans a designated directory tree for files matching configurable extensions (default: `.pdf`), assigns configurable metadata, and stores everything in a local SQLite database. Metadata field definitions are kept in an editable JSON file. The core logic is exposed as a Python API consumed by two interfaces: an interactive **CLI** (built-in `cmd` module) and a **browser-based GUI** (Flask on localhost). The user selects the interface mode at launch.
 
 ---
 
@@ -10,6 +10,7 @@ NHI Librarian is a lightweight CLI-based document cataloging tool that scans a d
 
 ```
 NHI_Librarian/
+├── __main__.py                # Launcher: python __main__.py [--cli | --gui]
 ├── bin/
 │   └── NHI_Librarian.py      # CLI entry point
 ├── data/
@@ -17,19 +18,31 @@ NHI_Librarian/
 │   └── meta_config.json       # Metadata field definitions (user-editable)
 ├── docs/
 │   └── ARCHITECTURE.md        # This file
+├── gui/
+│   ├── __init__.py
+│   ├── app.py                 # Flask application & route definitions
+│   ├── templates/
+│   │   ├── base.html          # Shared layout (nav bar, CSS, flash messages)
+│   │   ├── library.html       # Main table view (list, search, sort, filter)
+│   │   ├── detail.html        # Single-entry view & metadata edit form
+│   │   ├── stats.html         # Summary statistics page
+│   │   └── config.html        # Metadata schema editor (meta_config.json)
+│   └── static/
+│       └── style.css          # Custom styles
 ├── lib/
-    ├── __init__.py
-    ├── scanner.py             # File system scanning & move detection
-    ├── database.py            # SQLite database operations
-    ├── metadata.py            # Metadata schema loading & validation
-    └── api.py                 # Public API (importable by Jupyter / web apps)
+│   ├── __init__.py
+│   ├── scanner.py             # File system scanning & move detection
+│   ├── database.py            # SQLite database operations
+│   ├── metadata.py            # Metadata schema loading & validation
+│   └── api.py                 # Public API (importable by all interfaces)
 └── tests/
     ├── __init__.py
     ├── test_scanner.py
     ├── test_database.py
     ├── test_metadata.py
     ├── test_api.py
-    └── sample_documents/      # Test fixture files (PDFs, etc.)
+    ├── test_gui.py            # Flask route tests
+    └── sample_docs_directory/ # Test fixture files (PDFs, etc.)
 ```
 
 ---
@@ -44,7 +57,7 @@ Each file is identified by a **content hash** (SHA-256 of the first 64 KB + file
 ```python
 digest = hashlib.sha256(file.read(65536))   # first 64 KB
 digest.update(str(file_size).encode())       # append file size as string
-file_hash = digest.hexdigest()               # 64-char hex string
+file_hash = digest.hexdigest()[:20]               # 20-char hex string = first 64 KB + file size
 ```
 
 This avoids hashing large files while still differentiating files that share identical headers but differ in length.
@@ -85,7 +98,7 @@ A single SQLite file with two tables:
 
 | Column | Type | Description |
 |---|---|---|
-| `file_hash` | TEXT PRIMARY KEY | SHA-256 content hash |
+| `file_hash` | TEXT PRIMARY KEY | Truncated SHA-256 content hash (20 hex chars) |
 | `filename` | TEXT | Original filename |
 | `rel_path` | TEXT | Path relative to the root directory |
 | `file_size` | INTEGER | Size in bytes |
@@ -149,6 +162,7 @@ class NHILibrarian:
 
     # Scanning
     def refresh(self) -> ScanReport
+    def delete_missing(self) -> int          # remove all entries flagged missing; returns count
 
     # Entries
     def get_entry(self, file_hash: str) -> dict
@@ -162,6 +176,10 @@ class NHILibrarian:
 
     # Config
     def get_meta_config(self) -> dict
+    def save_meta_config(self, config: dict) -> None  # validate & write meta_config.json
+
+    # Cleanup
+    def close(self) -> None
 ```
 
 ---
@@ -179,12 +197,13 @@ The CLI uses Python's built-in `cmd` module for an interactive REPL-style interf
 | `update <hash_prefix> <field> <value>` | Update a single metadata field for an entry. |
 | `edit <hash_prefix>` | Interactively edit all metadata fields for an entry. |
 | `delete <hash_prefix>` | Remove an entry from the database (does not delete the file). |
+| `delete-old` | Permanently remove all entries flagged as MISSING from the database. |
 | `export [path]` | Export the entire database to a JSON file. Default: `data/library_export.json`. |
 | `stats` | Show summary statistics (total files, by genre, missing files, etc.). |
 | `help` | Show available commands. |
 | `quit` | Exit the program. |
 
-**Hash prefix**: Users don't need to type full SHA-256 hashes. The first 7+ characters suffice (like Git).
+**Hash prefix**: Users don't need to type the full 20-character hash. The first 7+ characters suffice (like Git).
 
 ---
 
@@ -192,11 +211,11 @@ The CLI uses Python's built-in `cmd` module for an interactive REPL-style interf
 
 ### 6.1 First Run
 ```
-1. User runs: python bin/NHI_Librarian.py
+1. User runs: python __main__.py --cli   (or --gui for browser mode)
 2. No library.db exists → create SQLite database with tables
 3. No meta_config.json exists → generate defaults (scan_directories: ["."])
 4. Auto-trigger `refresh` → scan all matching files, add to database with empty metadata
-5. Enter interactive CLI loop
+5. Enter interactive CLI loop  (or open browser to http://localhost:5000)
 ```
 
 ### 6.2 Refresh (Incremental Scan)
@@ -205,7 +224,10 @@ The CLI uses Python's built-in `cmd` module for an interactive REPL-style interf
 2. Compare against database:
    - Hash exists, path unchanged → skip (no action)
    - Hash exists, path changed  → auto-update rel_path (file was moved)
-   - Hash not in database       → add as new entry with default metadata
+   - Hash not in database       → add as new entry:
+       a. Set genre to the file's parent folder name (e.g. ./Bearings/file.pdf → "Bearings")
+       b. If the folder name is not in meta_config.json genre choices, add it and save config
+       c. Files in the scan root (no parent folder) get the default empty genre
    - Hash in database but file gone → flag as MISSING (do not auto-delete)
 3. Print summary: N new, N moved, N missing
 ```
@@ -232,24 +254,58 @@ The CLI uses Python's built-in `cmd` module for an interactive REPL-style interf
 | **JSON for metadata config** | Small, human-edited file. Easy to read and modify in any text editor. |
 | **Separate metadata table** | EAV-style storage means adding/removing metadata fields requires zero schema changes. |
 | **Content hash for identity** | Survives file renames and moves. Avoids duplicate entries. |
-| **No auto-delete on missing** | Files on network drives may be temporarily unavailable. Flagging is safer. |
+| **Auto-genre from folder name** | New files get their parent folder name as the default genre. If the folder name is not in the genre choices list, it is added automatically and `meta_config.json` is updated. Files at the scan root keep an empty genre. |
+| **No auto-delete on missing** | Files on network drives may be temporarily unavailable. Flagging is safer. Explicit `delete-old` command for intentional cleanup. |
 | **JSON export command** | Provides human-readable snapshots and interop with tools that need JSON input. |
 | **`cmd` module for CLI** | Built-in, no dependencies, supports tab completion and history. |
+| **Flask for GUI** | Lightweight, single dependency, renders in any browser. Localhost-only (not hosted). |
+| **CLI / GUI parity** | Both interfaces call the same `NHILibrarian` API. No feature is exclusive to either mode. |
 
 ---
 
 ## 8. Dependencies
 
-- **Python 3.14+** (standard library only — `sqlite3`, `json`, `hashlib`, `pathlib`, `cmd`)
-- **No external packages required**
+- **Python 3.14+** (standard library: `sqlite3`, `json`, `hashlib`, `pathlib`, `cmd`, `webbrowser`)
+- **Flask** (`pip install flask`) — required for GUI mode only; CLI mode has zero external dependencies
 
 ---
 
-## 9. Future Extension Points
+## 9. GUI Architecture (Flask)
 
-The `NHILibrarian` API class can be imported directly from Jupyter notebooks or web frameworks:
+### 9.1 Overview
 
-- **Jupyter**: `from lib.api import NHILibrarian` — query, visualize, and bulk-edit metadata interactively.
-- **Web dashboard**: Expose API methods via Flask/FastAPI routes.
-- **PDF text extraction**: Optional `PyPDF2`/`pdfplumber` integration to auto-extract title/author.
-- **Watcher mode**: `watchdog` for real-time file monitoring instead of manual refresh.
+The GUI runs a local Flask development server (`localhost:5000`) and opens the default browser automatically. It is **not** a hosted web application — it serves only the local user. All operations go through the same `NHILibrarian` API used by the CLI.
+
+### 9.2 Routes
+
+| Route | Method | Description |
+|---|---|---|
+| `/` | GET | Main library table — lists all entries with columns for filename, path, genre, status. Supports sorting and search via query params. |
+| `/refresh` | POST | Trigger a directory scan. Redirect back to `/` with a flash summary (N new, N moved, N missing). |
+| `/entry/<hash_prefix>` | GET | Detail view for a single entry — all file info and metadata fields displayed. |
+| `/entry/<hash_prefix>/edit` | GET/POST | Edit form for a single entry's metadata. GET shows pre-filled form; POST validates and saves. |
+| `/entry/<hash_prefix>/delete` | POST | Delete a single entry from the database. Redirect to `/`. |
+| `/delete-old` | POST | Remove all MISSING entries from the database. Redirect to `/` with count. |
+| `/search` | GET | Search results page. Query param `q` passed to `NHILibrarian.search()`. |
+| `/export` | POST | Trigger JSON export. Flash the output path. |
+| `/stats` | GET | Summary statistics page (total, by genre, missing count). |
+| `/config` | GET/POST | View and edit `meta_config.json`. GET shows current config in an editable form; POST validates and saves via `NHILibrarian.save_meta_config()`. |
+
+### 9.3 Templates
+
+| Template | Purpose |
+|---|---|
+| `base.html` | Shared layout: nav bar (Library, Stats, Config, Refresh button), flash message area, CSS link. |
+| `library.html` | Main table with sortable column headers, search bar, per-row Edit/Delete links, and a Delete Old button. |
+| `detail.html` | Read-only entry view + Edit button. Edit mode renders appropriate input widgets per field type (text input, dropdown for `choice`, tag input for `list`). |
+| `stats.html` | Summary counts, genre breakdown. |
+| `config.html` | JSON editor for `meta_config.json` — displays current fields, allows adding/removing/reordering fields, and editing `scan_directories` and `file_extensions`. |
+
+### 9.4 Design Principles
+
+- **No JavaScript frameworks** — plain HTML forms with minimal vanilla JS where needed (e.g., confirm dialogs).
+- **Flask flash messages** for operation feedback (success/error).
+- **UTF-8 throughout** — browser natively handles Japanese filenames.
+- **No authentication** — localhost-only, single-user tool.
+
+---
