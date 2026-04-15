@@ -144,6 +144,30 @@ class NHILibrarian:
             filters = {"genre": category}
         return database.list_entries(self._conn, sort_by=sort_by, filters=filters)
 
+    def resolve_file_path(self, file_hash: str) -> Path | None:
+        """Resolve an entry hash (full or prefix) to an existing absolute file path."""
+        full_hash = database.resolve_hash_prefix(self._conn, file_hash)
+        if full_hash is None:
+            return None
+
+        entry = database.get_entry(self._conn, full_hash)
+        if entry is None:
+            return None
+
+        rel_path = Path(entry["rel_path"])
+
+        # Search configured scan roots for the recorded relative path.
+        for scan_dir in self._scan_dirs:
+            candidate = (Path(scan_dir) / rel_path).resolve()
+            if candidate.is_file():
+                return candidate
+
+        # Fallback: handle absolute paths stored in legacy/custom databases.
+        if rel_path.is_absolute() and rel_path.is_file():
+            return rel_path
+
+        return None
+
     # -- Export --
 
     def export_json(self, out_path: str) -> None:

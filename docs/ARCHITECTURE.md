@@ -166,6 +166,7 @@ class NHILibrarian:
 
     # Entries
     def get_entry(self, file_hash: str) -> dict
+    def resolve_file_path(self, file_hash: str) -> Path | None
     def update_metadata(self, file_hash: str, updates: dict) -> None
     def delete_entry(self, file_hash: str) -> None
     def search(self, query: str) -> list[dict]
@@ -285,6 +286,7 @@ The GUI runs a local Flask development server (`localhost:5000`) and opens the d
 | `/entry/<hash_prefix>` | GET | Detail view for a single entry — all file info and metadata fields displayed. |
 | `/entry/<hash_prefix>/edit` | GET/POST | Edit form for a single entry's metadata. GET shows pre-filled form; POST validates and saves. |
 | `/entry/<hash_prefix>/delete` | POST | Delete a single entry from the database. Redirect to `/`. |
+| `/entry/<hash_prefix>/open` | GET | Open the file in the user's OS-default application and redirect back to the current list/detail page. |
 | `/delete-old` | POST | Remove all MISSING entries from the database. Redirect to `/` with count. |
 | `/search` | GET | Search results page. Query param `q` passed to `NHILibrarian.search()`. |
 | `/export` | POST | Trigger JSON export. Flash the output path. |
@@ -300,6 +302,8 @@ The GUI runs a local Flask development server (`localhost:5000`) and opens the d
 | `detail.html` | Read-only entry view + Edit button. Edit mode renders appropriate input widgets per field type (text input, dropdown for `choice`, tag input for `list`). |
 | `stats.html` | Summary counts, genre breakdown. |
 | `config.html` | JSON editor for `meta_config.json` — displays current fields, allows adding/removing/reordering fields, and editing `scan_directories` and `file_extensions`. |
+
+In the default list view (`library.html`), each **Path** cell is clickable and calls `/entry/<hash_prefix>/open`, which opens the file with the system default app for its file type.
 
 ### 9.4 Design Principles
 

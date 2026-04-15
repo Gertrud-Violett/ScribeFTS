@@ -9,6 +9,7 @@ A lightweight CLI tool to catalog and organize documents using customizable meta
 - **Move detection** — files are tracked by content hash, so renames and moves are handled automatically
 - **Missing file tracking** — files that disappear are flagged, never silently deleted
 - **Search & filter** — find entries by filename, title, keywords, or any metadata field
+- **Clickable paths in GUI** — click the Path cell in the list view to open the file with your OS-default app
 - **JSON export** — export the full catalog for use in other tools
 - **Zero external dependencies** — Python standard library only
 - **Importable API** — use `NHILibrarian` directly from Jupyter notebooks or web frameworks
@@ -16,6 +17,19 @@ A lightweight CLI tool to catalog and organize documents using customizable meta
 ## Requirements
 
 - Python 3.14 or above
+- Flask (GUI mode only)
+- Python standard library modules:
+	- `cmd`
+	- `dataclasses`
+	- `hashlib`
+	- `json`
+	- `os`
+	- `pathlib`
+	- `sqlite3`
+	- `subprocess`
+	- `sys`
+	- `traceback`
+	- `webbrowser`
 
 ## Quick Start
 
@@ -24,11 +38,14 @@ A lightweight CLI tool to catalog and organize documents using customizable meta
 git clone https://github.com/Gertrud-Violett/NHI_Librarian.git
 cd NHI_Librarian
 
-# Run the CLI
-python bin/NHI_Librarian.py
+# Run in CLI or GUI mode
+    python __main__.py --cli    # explicit CLI mode
+    python __main__.py --gui    # browser-based GUI mode
 ```
 
 On first run, NHI Librarian will create `data/library.db` and `data/meta_config.json` with sensible defaults, then scan the configured directories.
+
+Note: The database file (`data/library.db`) and configuration JSON (`data/meta_config.json`) are automatically generated the first time the program is run.
 
 ## CLI Commands
 

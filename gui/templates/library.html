@@ -73,7 +73,7 @@
                     <span class="status-present">OK</span>
                 {% endif %}
             </td>
-            <td>{{ entry.rel_path }}</td>
+            <td><a href="{{ url_for('open_entry_file', hash_prefix=entry.file_hash) }}">{{ entry.rel_path }}</a></td>
             <td>{{ entry.metadata.get('keywords', [])|join(', ') if entry.metadata.get('keywords', []) is iterable and entry.metadata.get('keywords', []) is not string else entry.metadata.get('keywords', '') }}</td>
         </tr>
         {% endfor %}

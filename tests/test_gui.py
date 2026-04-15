@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from gui.app import create_app
 
@@ -63,6 +64,10 @@ class TestIndex(GUITestBase):
         resp = self.client.get("/?sort=file_size")
         self.assertEqual(resp.status_code, 200)
 
+    def test_index_path_contains_open_link(self):
+        resp = self.client.get("/")
+        self.assertRegex(resp.data.decode(), r'/entry/[a-f0-9]{20}/open')
+
 
 class TestRefresh(GUITestBase):
     def test_refresh_redirects(self):
@@ -89,6 +94,26 @@ class TestDetail(GUITestBase):
     def test_detail_not_found(self):
         resp = self.client.get("/entry/00000000000000000000")
         self.assertEqual(resp.status_code, 302)  # redirect with flash
+
+
+class TestOpenEntryFile(GUITestBase):
+    def _get_hash(self):
+        resp = self.client.get("/")
+        import re
+        match = re.search(r'/entry/([a-f0-9]{20})', resp.data.decode())
+        return match.group(1) if match else None
+
+    def test_open_route_redirects_for_missing_hash(self):
+        resp = self.client.get("/entry/00000000000000000000/open")
+        self.assertEqual(resp.status_code, 302)
+
+    def test_open_route_calls_default_opener(self):
+        fh = self._get_hash()
+        self.assertIsNotNone(fh)
+        with patch("gui.app._open_with_default_app") as mock_open:
+            resp = self.client.get(f"/entry/{fh}/open")
+        self.assertEqual(resp.status_code, 302)
+        mock_open.assert_called_once()
 
 
 class TestEditEntry(GUITestBase):

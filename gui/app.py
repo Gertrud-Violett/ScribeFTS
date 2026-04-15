@@ -1,6 +1,9 @@
 """Flask-based GUI for NHI Librarian."""
 
 import json
+import os
+import subprocess
+import sys
 import traceback
 import webbrowser
 from pathlib import Path
@@ -9,6 +12,17 @@ from flask import Flask, flash, g, redirect, render_template, request, url_for
 from werkzeug.exceptions import HTTPException
 
 from lib.api import NHILibrarian
+
+
+def _open_with_default_app(file_path: Path) -> None:
+    """Open a file with the user's OS-default application."""
+    if sys.platform.startswith("win"):
+        os.startfile(str(file_path))  # type: ignore[attr-defined]
+        return
+    if sys.platform == "darwin":
+        subprocess.run(["open", str(file_path)], check=True)
+        return
+    subprocess.run(["xdg-open", str(file_path)], check=True)
 
 
 def create_app(data_dir: str | None = None) -> Flask:
@@ -80,6 +94,20 @@ def create_app(data_dir: str | None = None) -> Flask:
             return redirect(url_for("index"))
         fields = lib.get_meta_config()["fields"]
         return render_template("detail.html", entry=entry, fields=fields, edit_mode=False)
+
+    @app.route("/entry/<hash_prefix>/open")
+    def open_entry_file(hash_prefix):
+        lib = get_lib()
+        file_path = lib.resolve_file_path(hash_prefix)
+        if file_path is None:
+            flash("File not found on disk for this entry.", "error")
+            return redirect(request.referrer or url_for("index"))
+
+        try:
+            _open_with_default_app(file_path)
+        except Exception as e:
+            flash(f"Failed to open file: {e}", "error")
+        return redirect(request.referrer or url_for("index"))
 
     @app.route("/entry/<hash_prefix>/edit", methods=["GET", "POST"])
     def edit_entry(hash_prefix):
