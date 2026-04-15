@@ -8,12 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Structure
 
-```
-NHI_Librarian/
-├── CLAUDE.md       # Claude Code guidance (this file)
-├── LICENSE         # BSD 2-Clause License
-└── README.md       # Project overview
-```
+| PATH/LINK | Description |
+|---|---|
+| [CLAUDE.md](CLAUDE.md) | Claude Code guidance (this file) |
+| [LICENSE](LICENSE) | BSD 2-Clause License |
+| [README.md](README.md) | Project overview |
 
 ## Development Guidelines
 
