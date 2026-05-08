@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}AI Config - ScribeFTS{% endblock %}
+{% block content %}
+<h1>AI Configuration</h1>
+
+<form method="post">
+    <div class="card">
+        <div class="form-group">
+            <label>
+                <input type="checkbox" name="enabled" {% if ai_cfg.enabled %}checked{% endif %}>
+                Enable AI Assist
+            </label>
+            <small style="display:block;color:var(--text-muted);margin-top:0.25rem;">
+                When enabled, Layer 3 extraction uses the configured AI provider to suggest metadata from PDF text.
+            </small>
+        </div>
+
+        <div class="form-group">
+            <label>Provider</label>
+            <select name="provider" id="provider-select">
+                <option value="gemini" {% if ai_cfg.provider == 'gemini' %}selected{% endif %}>Google Gemini</option>
+                <option value="openai" {% if ai_cfg.provider == 'openai' %}selected{% endif %}>OpenAI-compatible</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label>API Key</label>
+            <input type="password" name="api_key" value="{{ ai_cfg.api_key }}" placeholder="Enter your API key" autocomplete="off">
+        </div>
+
+        <div class="form-group">
+            <label>Model</label>
+            <input type="text" name="model" id="model-input" value="{{ ai_cfg.model }}" placeholder="e.g. gemini-1.5-flash">
+            <small style="display:block;color:var(--text-muted);margin-top:0.25rem;">
+                Gemini default: <code>gemini-1.5-flash</code> &nbsp;|&nbsp; OpenAI default: <code>gpt-4o-mini</code>
+            </small>
+        </div>
+
+        <div class="form-group" id="openai-endpoint-group" style="display:none;">
+            <label>OpenAI-compatible Endpoint</label>
+            <input type="text" name="openai_endpoint" value="{{ ai_cfg.openai_endpoint }}" placeholder="https://api.openai.com/v1/chat/completions">
+            <small style="display:block;color:var(--text-muted);margin-top:0.25rem;">
+                Leave as default for OpenAI. Change to your local or custom endpoint if needed.
+            </small>
+        </div>
+
+        <div class="form-group">
+            <label>Auto-commit Threshold (0.0 – 1.0)</label>
+            <input type="number" name="auto_commit_threshold" value="{{ ai_cfg.auto_commit_threshold }}" min="0.0" max="1.0" step="0.05">
+            <small style="display:block;color:var(--text-muted);margin-top:0.25rem;">
+                Fields with extraction confidence at or above this threshold are committed automatically.
+                Fields below it are stored as drafts for manual review.
+            </small>
+        </div>
+    </div>
+
+    <button class="btn btn-primary" type="submit">Save</button>
+    <a href="{{ url_for('index') }}" class="btn btn-secondary">Cancel</a>
+</form>
+
+<script>
+(function() {
+    var sel = document.getElementById('provider-select');
+    var endpointGroup = document.getElementById('openai-endpoint-group');
+    var modelInput = document.getElementById('model-input');
+
+    function updateVisibility() {
+        if (sel.value === 'openai') {
+            endpointGroup.style.display = '';
+        } else {
+            endpointGroup.style.display = 'none';
+        }
+    }
+
+    sel.addEventListener('change', updateVisibility);
+    updateVisibility();
+})();
+</script>
+{% endblock %}

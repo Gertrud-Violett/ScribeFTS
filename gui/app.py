@@ -1,17 +1,33 @@
-"""Flask-based GUI for NHI Librarian."""
+"""Flask-based GUI for ScribeFTS."""
 
 import json
 import os
 import subprocess
 import sys
+import threading
+import time
 import traceback
 import webbrowser
 from pathlib import Path
 
-from flask import Flask, flash, g, redirect, render_template, request, url_for
+from flask import Flask, flash, g, redirect, render_template, request, Response, url_for, stream_with_context
 from werkzeug.exceptions import HTTPException
 
-from lib.api import NHILibrarian
+from lib.api import ScribeFTS
+
+_FILES_COLUMNS = {"filename", "date_added", "date_modified", "file_size", "rel_path", "missing"}
+
+
+def _sort_entries(entries: list, sort_by: str, sort_order: str) -> list:
+    """Sort a list of entry dicts by any files-table column or metadata field."""
+    reverse = sort_order.lower() == "desc"
+    if sort_by in _FILES_COLUMNS:
+        return sorted(entries, key=lambda e: (e.get(sort_by) or ""), reverse=reverse)
+    return sorted(
+        entries,
+        key=lambda e: (e.get("metadata", {}).get(sort_by) or "").lower(),
+        reverse=reverse,
+    )
 
 
 def _open_with_default_app(file_path: Path) -> None:
@@ -31,16 +47,16 @@ def create_app(data_dir: str | None = None) -> Flask:
         data_dir = str(Path(__file__).resolve().parent.parent / "data")
 
     app = Flask(__name__)
-    app.secret_key = "nhi-librarian-local-only"
+    app.secret_key = "scribefts-local-only"
 
-    def get_lib() -> NHILibrarian:
-        """Return a request-scoped librarian instance.
+    def get_lib() -> ScribeFTS:
+        """Return a request-scoped ScribeFTS instance.
 
         Flask may serve requests in different threads, so the SQLite connection
         must be created and used within the same request thread.
         """
         if "lib" not in g:
-            g.lib = NHILibrarian(data_dir=data_dir)
+            g.lib = ScribeFTS(data_dir=data_dir)
         return g.lib
 
     @app.teardown_appcontext
@@ -70,9 +86,16 @@ def create_app(data_dir: str | None = None) -> Flask:
     @app.route("/")
     def index():
         lib = get_lib()
-        sort_by = request.args.get("sort", "filename")
-        entries = lib.list_all(sort_by=sort_by)
-        return render_template("library.html", entries=entries, view_name="index", query="")
+        sort_by = request.args.get("sort", "genre")
+        sort_order = request.args.get("order", "asc")
+        entries = lib.list_all(sort_by=sort_by, sort_order=sort_order)
+        pending_drafts = lib.get_pending_draft_hashes()
+        fields = lib.get_meta_config()["fields"]
+        return render_template(
+            "library.html", entries=entries, view_name="index", query="",
+            pending_drafts=pending_drafts, fields=fields,
+            current_sort=sort_by, sort_order=sort_order,
+        )
 
     @app.route("/refresh", methods=["POST"])
     def refresh():
@@ -93,7 +116,8 @@ def create_app(data_dir: str | None = None) -> Flask:
             flash("Entry not found.", "error")
             return redirect(url_for("index"))
         fields = lib.get_meta_config()["fields"]
-        return render_template("detail.html", entry=entry, fields=fields, edit_mode=False)
+        draft = lib.get_draft(hash_prefix)
+        return render_template("detail.html", entry=entry, fields=fields, edit_mode=False, draft=draft)
 
     @app.route("/entry/<hash_prefix>/open")
     def open_entry_file(hash_prefix):
@@ -132,6 +156,8 @@ def create_app(data_dir: str | None = None) -> Flask:
             try:
                 lib.update_metadata(hash_prefix, updates)
                 flash("Metadata updated.", "success")
+                if request.form.get("_return_to") == "library":
+                    return redirect(url_for("index"))
                 return redirect(url_for("detail", hash_prefix=entry["file_hash"]))
             except ValueError as e:
                 flash(str(e), "error")
@@ -162,11 +188,88 @@ def create_app(data_dir: str | None = None) -> Flask:
     def search():
         lib = get_lib()
         query = request.args.get("q", "").strip()
-        sort_by = request.args.get("sort", "filename")
         if not query:
             return redirect(url_for("index"))
-        entries = lib.search(query)
-        return render_template("library.html", entries=entries, query=query, view_name="search")
+        sort_by = request.args.get("sort", "genre")
+        sort_order = request.args.get("order", "asc")
+        entries = _sort_entries(lib.search(query), sort_by, sort_order)
+        pending_drafts = lib.get_pending_draft_hashes()
+        fields = lib.get_meta_config()["fields"]
+        return render_template(
+            "library.html", entries=entries, query=query,
+            view_name="search", search_mode="metadata", pending_drafts=pending_drafts, fields=fields,
+            current_sort=sort_by, sort_order=sort_order,
+        )
+
+    @app.route("/fts_search")
+    def fts_search():
+        lib = get_lib()
+        query = request.args.get("q", "").strip()
+        if not query:
+            return redirect(url_for("index"))
+        try:
+            entries = lib.fts_search(query)
+        except Exception as e:
+            flash(f"Full-text search error: {e}", "error")
+            entries = []
+        sort_by = request.args.get("sort", "genre")
+        sort_order = request.args.get("order", "asc")
+        entries = _sort_entries(entries, sort_by, sort_order)
+        pending_drafts = lib.get_pending_draft_hashes()
+        fields = lib.get_meta_config()["fields"]
+        return render_template(
+            "library.html", entries=entries, query=query,
+            view_name="fts_search", search_mode="fulltext", pending_drafts=pending_drafts, fields=fields,
+            current_sort=sort_by, sort_order=sort_order,
+        )
+
+    @app.route("/reindex", methods=["GET"])
+    def reindex_page():
+        return render_template("progress.html", operation="reindex", title="Rebuilding FTS Index")
+
+    @app.route("/reindex", methods=["POST"])
+    def reindex():
+        class Progress:
+            def __init__(self):
+                self.current = 0
+                self.total = 0
+                self.count = 0
+
+            def callback(self, current, total):
+                self.current = current
+                self.total = total
+
+        progress = Progress()
+
+        def generate():
+            def work():
+                # Create a new ScribeFTS instance for this thread
+                thread_lib = ScribeFTS(data_dir=str(Path(data_dir)))
+                try:
+                    progress.count = thread_lib.reindex_fts(progress_callback=progress.callback)
+                finally:
+                    thread_lib.close()
+
+            thread = threading.Thread(target=work, daemon=True)
+            thread.start()
+
+            while thread.is_alive():
+                yield json.dumps({
+                    "current": progress.current,
+                    "total": progress.total,
+                    "complete": False,
+                }) + "\n"
+                time.sleep(0.1)
+
+            thread.join()
+            yield json.dumps({
+                "current": progress.total,
+                "total": progress.total,
+                "complete": True,
+                "count": progress.count,
+            }) + "\n"
+
+        return Response(stream_with_context(generate()), mimetype="application/x-ndjson")
 
     @app.route("/export", methods=["POST"])
     def do_export():
@@ -232,6 +335,119 @@ def create_app(data_dir: str | None = None) -> Flask:
         config_json = json.dumps(config, indent=2, ensure_ascii=False)
         return render_template("config.html", config_json=config_json, config=config)
 
+    @app.route("/suggest/<hash_prefix>", methods=["POST"])
+    def suggest_entry(hash_prefix):
+        lib = get_lib()
+        try:
+            result = lib.suggest_metadata(hash_prefix)
+            auto = sum(1 for v in result.values() if v.get("auto_committed"))
+            draft = len(result) - auto
+            msg = f"Extraction complete: {auto} field(s) auto-committed, {draft} draft(s) pending."
+            flash(msg, "success")
+        except ValueError as e:
+            flash(str(e), "error")
+        return redirect(request.referrer or url_for("detail", hash_prefix=hash_prefix))
+
+    @app.route("/commit/<hash_prefix>", methods=["POST"])
+    def commit_entry(hash_prefix):
+        lib = get_lib()
+        try:
+            lib.commit_draft(hash_prefix)
+            flash("Draft committed to metadata.", "success")
+        except ValueError as e:
+            flash(str(e), "error")
+        return redirect(request.referrer or url_for("detail", hash_prefix=hash_prefix))
+
+    @app.route("/discard/<hash_prefix>", methods=["POST"])
+    def discard_entry_draft(hash_prefix):
+        lib = get_lib()
+        lib.discard_draft(hash_prefix)
+        flash("Draft discarded.", "info")
+        return redirect(request.referrer or url_for("detail", hash_prefix=hash_prefix))
+
+    @app.route("/suggest_all", methods=["GET"])
+    def suggest_all_page():
+        return render_template("progress.html", operation="suggest_all", title="Running Metadata Extraction")
+
+    @app.route("/suggest_all", methods=["POST"])
+    def suggest_all():
+        class Progress:
+            def __init__(self):
+                self.current = 0
+                self.total = 0
+                self.suggested = 0
+                self.auto_committed = 0
+
+            def callback(self, current, total):
+                self.current = current
+                self.total = total
+
+        progress = Progress()
+
+        def generate():
+            def work():
+                # Create a new ScribeFTS instance for this thread
+                thread_lib = ScribeFTS(data_dir=str(Path(data_dir)))
+                try:
+                    counts = thread_lib.suggest_all(progress_callback=progress.callback)
+                    progress.suggested = counts.get("suggested", 0)
+                    progress.auto_committed = counts.get("auto_committed", 0)
+                finally:
+                    thread_lib.close()
+
+            thread = threading.Thread(target=work, daemon=True)
+            thread.start()
+
+            while thread.is_alive():
+                yield json.dumps({
+                    "current": progress.current,
+                    "total": progress.total,
+                    "complete": False,
+                }) + "\n"
+                time.sleep(0.1)
+
+            thread.join()
+            yield json.dumps({
+                "current": progress.total,
+                "total": progress.total,
+                "complete": True,
+                "suggested": progress.suggested,
+                "auto_committed": progress.auto_committed,
+            }) + "\n"
+
+        return Response(stream_with_context(generate()), mimetype="application/x-ndjson")
+
+    @app.route("/commit_all", methods=["POST"])
+    def commit_all():
+        lib = get_lib()
+        count = lib.commit_all_drafts()
+        flash(f"Committed drafts for {count} entry/entries.", "success")
+        return redirect(url_for("index"))
+
+    @app.route("/ai_config", methods=["GET", "POST"])
+    def ai_config_page():
+        lib = get_lib()
+        if request.method == "POST":
+            config = {
+                "enabled": request.form.get("enabled") == "on",
+                "provider": request.form.get("provider", "gemini"),
+                "api_key": request.form.get("api_key", "").strip(),
+                "model": request.form.get("model", "").strip(),
+                "auto_commit_threshold": request.form.get("auto_commit_threshold", "0.8"),
+                "openai_endpoint": request.form.get(
+                    "openai_endpoint", "https://api.openai.com/v1/chat/completions"
+                ).strip(),
+            }
+            try:
+                lib.save_ai_config(config)
+                flash("AI configuration saved.", "success")
+                return redirect(url_for("ai_config_page"))
+            except ValueError as e:
+                flash(str(e), "error")
+
+        ai_cfg = lib.get_ai_config()
+        return render_template("ai_config.html", ai_cfg=ai_cfg)
+
     return app
 
 
@@ -241,7 +457,7 @@ def run_gui(data_dir: str | None = None):
 
     # Auto-refresh on startup
     with app.app_context():
-        lib_instance = NHILibrarian(
+        lib_instance = ScribeFTS(
             data_dir=data_dir or str(Path(__file__).resolve().parent.parent / "data")
         )
         report = lib_instance.refresh()

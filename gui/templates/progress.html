@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} - ScribeFTS{% endblock %}
+{% block content %}
+
+<div class="progress-modal">
+    <div class="progress-card">
+        <h2>{{ title }}</h2>
+        <div class="progress-container">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+            </div>
+            <div class="progress-text">
+                <span id="progress-current">0</span> / <span id="progress-total">0</span>
+                (<span id="progress-percent">0</span>%)
+            </div>
+        </div>
+        <p id="status-message" style="text-align: center; color: var(--text-muted); margin-top: 1rem;">Processing...</p>
+    </div>
+</div>
+
+<script>
+(function() {
+    const operation = '{{ operation }}';
+    const progressFill = document.getElementById('progress-fill');
+    const progressCurrent = document.getElementById('progress-current');
+    const progressTotal = document.getElementById('progress-total');
+    const progressPercent = document.getElementById('progress-percent');
+    const statusMessage = document.getElementById('status-message');
+
+    async function startOperation() {
+        try {
+            const response = await fetch(`/{{ operation }}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            if (!response.ok) {
+                statusMessage.textContent = 'Error: ' + response.statusText;
+                statusMessage.style.color = 'var(--danger-dark)';
+                return;
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    try {
+                        const data = JSON.parse(line);
+
+                        if (data.complete) {
+                            progressCurrent.textContent = data.total || data.current || 0;
+                            progressTotal.textContent = data.total || 0;
+                            progressPercent.textContent = '100';
+                            progressFill.style.width = '100%';
+
+                            if (operation === 'reindex') {
+                                statusMessage.innerHTML = 'Indexed <strong>' + data.count + '</strong> document(s). <a href="{{ url_for("index") }}">Return to library</a>';
+                            } else if (operation === 'suggest_all') {
+                                statusMessage.innerHTML = 'Processed <strong>' + data.suggested + '</strong> entries, auto-committed <strong>' + data.auto_committed + '</strong> field(s). <a href="{{ url_for("index") }}">Return to library</a>';
+                            }
+                            statusMessage.style.color = 'var(--success-dark)';
+                            return;
+                        } else {
+                            const current = data.current || 0;
+                            const total = data.total || 1;
+                            const pct = total > 0 ? Math.round(current / total * 100) : 0;
+
+                            progressCurrent.textContent = current;
+                            progressTotal.textContent = total;
+                            progressPercent.textContent = pct;
+                            progressFill.style.width = pct + '%';
+                        }
+                    } catch (e) {
+                        console.error('Error parsing progress data:', e, line);
+                    }
+                }
+            }
+        } catch (error) {
+            statusMessage.textContent = 'Error: ' + error.message;
+            statusMessage.style.color = 'var(--danger-dark)';
+        }
+    }
+
+    startOperation();
+})();
+</script>
+
+{% endblock %}

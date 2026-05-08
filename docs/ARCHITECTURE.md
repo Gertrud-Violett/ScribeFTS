@@ -1,21 +1,25 @@
-# NHI Librarian — Architecture Document
+# ScribeFTS — Architecture Document
 
 ## 1. Overview
 
-NHI Librarian is a lightweight document cataloging tool that scans a designated directory tree for files matching configurable extensions (default: `.pdf`), assigns configurable metadata, and stores everything in a local SQLite database. Metadata field definitions are kept in an editable JSON file. The core logic is exposed as a Python API consumed by two interfaces: an interactive **CLI** (built-in `cmd` module) and a **browser-based GUI** (Flask on localhost). The user selects the interface mode at launch.
+ScribeFTS is a lightweight document cataloging tool that scans a designated directory tree for files matching configurable extensions (default: `.pdf`), assigns configurable metadata, and stores everything in a local SQLite database. Metadata field definitions are kept in an editable JSON file. The core logic is exposed as a Python API consumed by two interfaces: an interactive **CLI** (built-in `cmd` module) and a **browser-based GUI** (Flask on localhost). The user selects the interface mode at launch.
+
+A second, separate SQLite database provides **full-text search** (SQLite FTS5) over both document metadata and extracted document text (PDF body content). The two databases are kept strictly separate: `library.db` is the authoritative catalog; `fts.db` is a derived, fully re-buildable search index.
 
 ---
 
 ## 2. Directory Layout
 
 ```
-NHI_Librarian/
+ScribeFTS/
 ├── __main__.py                # Launcher: python __main__.py [--cli | --gui]
 ├── bin/
-│   └── NHI_Librarian.py      # CLI entry point
+│   └── ScribeFTS.py           # CLI entry point
 ├── data/
-│   ├── library.db             # SQLite database (auto-generated)
-│   └── meta_config.json       # Metadata field definitions (user-editable)
+│   ├── library.db             # SQLite metadata catalog (auto-generated)
+│   ├── fts.db                 # SQLite FTS5 search index (auto-generated, re-buildable)
+│   ├── meta_config.json       # Metadata field definitions (user-editable)
+│   └── ai_config.json         # AI provider settings (auto-generated, user-editable)
 ├── docs/
 │   └── ARCHITECTURE.md        # This file
 ├── gui/
@@ -24,16 +28,20 @@ NHI_Librarian/
 │   ├── templates/
 │   │   ├── base.html          # Shared layout (nav bar, CSS, flash messages)
 │   │   ├── library.html       # Main table view (list, search, sort, filter)
-│   │   ├── detail.html        # Single-entry view & metadata edit form
+│   │   ├── detail.html        # Single-entry view, metadata edit, draft review
 │   │   ├── stats.html         # Summary statistics page
-│   │   └── config.html        # Metadata schema editor (meta_config.json)
+│   │   ├── config.html        # Metadata schema editor (meta_config.json)
+│   │   └── ai_config.html     # AI provider settings page
 │   └── static/
 │       └── style.css          # Custom styles
 ├── lib/
 │   ├── __init__.py
 │   ├── scanner.py             # File system scanning & move detection
-│   ├── database.py            # SQLite database operations
+│   ├── database.py            # SQLite database operations (incl. draft staging)
 │   ├── metadata.py            # Metadata schema loading & validation
+│   ├── fts.py                 # FTS5 database operations & PDF text extraction
+│   ├── extractor.py           # 3-layer metadata extraction pipeline
+│   ├── ai_client.py           # AI API HTTP client (Gemini, OpenAI-compatible)
 │   └── api.py                 # Public API (importable by all interfaces)
 └── tests/
     ├── __init__.py
@@ -41,6 +49,8 @@ NHI_Librarian/
     ├── test_database.py
     ├── test_metadata.py
     ├── test_api.py
+    ├── test_extractor.py      # Extractor layer tests
+    ├── test_fts.py            # FTS module tests
     ├── test_gui.py            # Flask route tests
     └── sample_docs_directory/ # Test fixture files (PDFs, etc.)
 ```
@@ -51,13 +61,13 @@ NHI_Librarian/
 
 ### 3.1 File Identity
 
-Each file is identified by a **content hash** (SHA-256 of the first 64 KB + file size). This allows NHI Librarian to detect when a file has been **moved** to a different sub-directory without treating it as a new file.
+Each file is identified by a **content hash** (SHA-256 of the first 64 KB + file size). This allows ScribeFTS to detect when a file has been **moved** to a different sub-directory without treating it as a new file.
 
 **Hash algorithm (pseudocode):**
 ```python
 digest = hashlib.sha256(file.read(65536))   # first 64 KB
 digest.update(str(file_size).encode())       # append file size as string
-file_hash = digest.hexdigest()[:20]               # 20-char hex string = first 64 KB + file size
+file_hash = digest.hexdigest()[:20]          # 20-char hex string
 ```
 
 This avoids hashing large files while still differentiating files that share identical headers but differ in length.
@@ -115,9 +125,74 @@ A single SQLite file with two tables:
 | `field_value` | TEXT | Value (lists stored as JSON arrays) |
 | | | PRIMARY KEY (file_hash, field_name) |
 
-The two-table design keeps the fixed file-tracking columns separate from the user-configurable metadata, so adding or removing metadata fields never requires a schema migration.
+**`metadata_draft` table** — one row per (file, field) pair, for staged suggestions:
+
+| Column | Type | Description |
+|---|---|---|
+| `file_hash` | TEXT | FK → files.file_hash (ON DELETE CASCADE) |
+| `field_name` | TEXT | Field name being suggested |
+| `field_value` | TEXT | Suggested value |
+| `source` | TEXT | Extraction source: `layer1`, `layer2`, `layer3`, `layer3_ai` |
+| `confidence` | REAL | Confidence score 0.0–1.0 |
+| `created_at` | TEXT | ISO-8601 timestamp |
+| | | PRIMARY KEY (file_hash, field_name) |
+
+Draft rows are temporary: they are either committed to the `metadata` table (making the suggestion permanent) or discarded. Auto-commit occurs when `confidence >= auto_commit_threshold` (configurable in `ai_config.json`).
+
+The three-table design keeps extracted suggestions isolated from confirmed metadata, preserving the original catalog's integrity until the user (or the auto-commit logic) approves the suggestion.
 
 **Why SQLite?** Single portable file, built into Python (`sqlite3`), crash-safe (ACID), fast incremental updates, readable by any SQLite-compatible tool (DB Browser, DBeaver, Jupyter, etc.). Format guaranteed stable until 2050+.
+
+### 3.4 AI Configuration (`ai_config.json`)
+
+Stored in `data/ai_config.json`. Created with defaults on first access if absent. Users edit it via the GUI's AI Config page or directly.
+
+```json
+{
+  "enabled": false,
+  "provider": "gemini",
+  "api_key": "",
+  "model": "gemini-1.5-flash",
+  "auto_commit_threshold": 0.8,
+  "openai_endpoint": "https://api.openai.com/v1/chat/completions"
+}
+```
+
+| Key | Description |
+|---|---|
+| `enabled` | Whether AI-assisted extraction (Layer 3b) is active |
+| `provider` | `"gemini"` or `"openai"` (OpenAI-compatible) |
+| `api_key` | API key for the selected provider |
+| `model` | Model name (e.g. `gemini-1.5-flash`, `gpt-4o-mini`) |
+| `auto_commit_threshold` | 0.0–1.0; fields extracted with confidence at or above this value are committed automatically |
+| `openai_endpoint` | Full URL for OpenAI-compatible API; only used when `provider = "openai"` |
+
+### 3.5 FTS Database (`fts.db`)
+
+A **second, separate** SQLite file holding a single FTS5 virtual table. It is fully derived from `library.db` plus document content; dropping and rebuilding it is always safe and never constitutes data loss.
+
+**`documents_fts` virtual table** (FTS5):
+
+| Column | Indexed? | Content |
+|---|---|---|
+| `file_hash` | No (UNINDEXED) | Links to `library.db → files.file_hash` |
+| `filename` | Yes | Original filename |
+| `metadata_text` | Yes | Concatenated title + authors + keywords + notes + year + genre |
+| `body` | Yes | Extracted plain text from the document file |
+
+```sql
+CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+    file_hash UNINDEXED,
+    filename,
+    metadata_text,
+    body,
+    tokenize = 'unicode61'
+);
+```
+
+The `unicode61` tokenizer is used for correct Unicode segmentation, including Japanese characters.
+
+**Content source for `body`:** Text is extracted from PDFs using PyMuPDF (`fitz`). For non-PDF files the body is left empty. Extraction failures are logged and silently skipped — they never block `refresh()`.
 
 ---
 
@@ -134,14 +209,19 @@ The two-table design keeps the fixed file-tracking columns separate from the use
 
 | Function | Description |
 |---|---|
-| `open_db(db_path) -> Connection` | Open (or create) the SQLite database. Creates tables if they don't exist. |
+| `open_db(db_path) -> Connection` | Open (or create) the SQLite database. Creates all three tables if they don't exist. |
 | `add_entry(conn, file_info, metadata)` | Insert a new file entry + metadata rows. |
 | `update_path(conn, file_hash, new_rel_path)` | Update the stored path when a file has moved. |
 | `update_metadata(conn, file_hash, field, value)` | Insert or update a single metadata field. |
 | `delete_entry(conn, file_hash)` | Remove an entry and its metadata from the database. |
-| `find_entries(conn, query) -> list[dict]` | Search entries by filename, title, or any metadata value. |
+| `find_entries(conn, query) -> list[dict]` | Search entries by filename or any metadata value (LIKE-based). |
 | `list_entries(conn, sort_by, filters) -> list[dict]` | List/filter/sort all entries. |
 | `export_json(conn, out_path)` | Export the entire database to a JSON file. |
+| `upsert_draft(conn, file_hash, field_name, value, source, confidence)` | Insert or replace one draft suggestion row. |
+| `get_draft(conn, file_hash) -> dict` | Return all draft fields for one file as `{field: {value, source, confidence}}`. |
+| `get_all_drafts(conn) -> dict` | Return all pending drafts keyed by `file_hash`. |
+| `commit_draft(conn, file_hash)` | Copy all draft rows for a file into `metadata`, then delete from draft. |
+| `delete_draft(conn, file_hash)` | Discard all pending drafts for a file without committing. |
 
 ### 4.3 `metadata.py` — Metadata Schema
 
@@ -152,17 +232,28 @@ The two-table design keeps the fixed file-tracking columns separate from the use
 | `validate_metadata(meta_config, metadata) -> list[str]` | Validate metadata values against the schema. Returns a list of error messages (empty = valid). |
 | `build_empty_metadata(meta_config) -> dict` | Create a metadata dict with all default values. |
 
-### 4.4 `api.py` — Public API Facade
+### 4.4 `fts.py` — FTS5 Search Index
 
-A single class `NHILibrarian` that wraps all operations. This is the **only interface** that external code should call (CLI, Jupyter, web apps).
+| Function | Description |
+|---|---|
+| `open_fts_db(fts_db_path) -> Connection` | Open (or create) the FTS database; creates the `documents_fts` virtual table if absent. |
+| `extract_text(file_path) -> str` | Extract plain text from a document file (PDF via PyMuPDF). Returns `""` on failure. |
+| `index_document(fts_conn, file_hash, filename, metadata_text, body)` | Add or replace one document in the FTS index (DELETE + INSERT pattern). |
+| `remove_document(fts_conn, file_hash)` | Delete one document from the FTS index. |
+| `fts_search(fts_conn, query) -> list[str]` | Run an FTS5 query; return a list of matching `file_hash` values. |
+| `rebuild_index(fts_conn, lib_conn, scan_dirs)` | Truncate and rebuild the entire FTS index from `library.db`. |
+
+### 4.5 `api.py` — Public API Facade
+
+A single class `ScribeFTS` that wraps all operations. This is the **only interface** that external code should call (CLI, Jupyter, web apps).
 
 ```python
-class NHILibrarian:
+class ScribeFTS:
     def __init__(self, data_dir: str, scan_dirs: list[str] = None)
 
     # Scanning
     def refresh(self) -> ScanReport
-    def delete_missing(self) -> int          # remove all entries flagged missing; returns count
+    def delete_missing(self) -> int
 
     # Entries
     def get_entry(self, file_hash: str) -> dict
@@ -170,6 +261,7 @@ class NHILibrarian:
     def update_metadata(self, file_hash: str, updates: dict) -> None
     def delete_entry(self, file_hash: str) -> None
     def search(self, query: str) -> list[dict]
+    def fts_search(self, query: str) -> list[dict]
     def list_all(self, sort_by: str = "filename", category: str = None) -> list[dict]
 
     # Export
@@ -177,29 +269,99 @@ class NHILibrarian:
 
     # Config
     def get_meta_config(self) -> dict
-    def save_meta_config(self, config: dict) -> None  # validate & write meta_config.json
+    def save_meta_config(self, config: dict) -> None
+
+    # FTS
+    def reindex_fts(self) -> int
+
+    # Metadata extraction & draft staging
+    def suggest_metadata(self, file_hash: str) -> dict   # run pipeline; auto-commit high-confidence fields
+    def get_draft(self, file_hash: str) -> dict          # return pending draft (empty dict if none)
+    def commit_draft(self, file_hash: str) -> None       # commit all draft fields to metadata
+    def discard_draft(self, file_hash: str) -> None      # delete draft without committing
+    def suggest_all(self) -> dict[str, int]              # run pipeline for all entries with empty fields
+    def commit_all_drafts(self) -> int                   # commit all pending drafts; returns count
+    def get_pending_draft_hashes(self) -> set[str]       # return set of file_hashes with pending drafts
+
+    # AI config
+    def get_ai_config(self) -> dict
+    def save_ai_config(self, config: dict) -> None
 
     # Cleanup
     def close(self) -> None
 ```
 
+### 4.6 `extractor.py` — 3-Layer Metadata Extraction Pipeline
+
+Implements a waterfall extraction strategy. Each layer only fills fields that earlier layers left empty.
+
+**Data structures:**
+```python
+@dataclass
+class FieldDraft:
+    value: str
+    source: str       # 'layer1' | 'layer2' | 'layer3' | 'layer3_ai'
+    confidence: float # 0.0–1.0
+
+@dataclass
+class ExtractionResult:
+    title: FieldDraft | None = None
+    authors: FieldDraft | None = None
+    year: FieldDraft | None = None
+    keywords: FieldDraft | None = None
+```
+
+**Layers and confidence scores:**
+
+| Layer | Source | Title | Authors | Year | Keywords |
+|---|---|---|---|---|---|
+| 1 — PDF internal metadata (PyMuPDF) | `layer1` | 0.95 | 0.90 | 0.85 | — |
+| 2 — Filename/path heuristics (regex) | `layer2` | — | 0.50 | 0.70 | 0.40 |
+| 3a — First-page structural heuristics | `layer3` | 0.40 | 0.45 | 0.50 | — |
+| 3b — AI extraction (when enabled) | `layer3_ai` | 0.75 | 0.75 | 0.75 | — |
+
+**Public entry point:**
+```python
+def extract_metadata(file_path, current_metadata=None, ai_config=None) -> ExtractionResult
+```
+
+Fields already populated in `current_metadata` are skipped by all layers (a sentinel value prevents layer 2/3 from overwriting them).
+
+### 4.7 `ai_client.py` — AI API HTTP Client
+
+Uses `urllib.request` only — no additional dependencies. Supports Google Gemini and any OpenAI-compatible API endpoint.
+
+| Function | Description |
+|---|---|
+| `load_ai_config(path) -> dict` | Load `ai_config.json`; create with defaults if absent. |
+| `save_ai_config(path, config)` | Write `ai_config.json`. |
+| `call_ai(prompt, ai_config) -> str \| None` | Send prompt to configured provider; return raw text response or `None` on any error. |
+
+All network errors, auth failures, and JSON parse errors are caught; callers receive `None` and fall back to heuristic extraction.
+
 ---
 
-## 5. CLI Commands (`NHI_Librarian.py`)
+## 5. CLI Commands (`bin/ScribeFTS.py`)
 
 The CLI uses Python's built-in `cmd` module for an interactive REPL-style interface.
 
 | Command | Description |
 |---|---|
-| `refresh` | Scan the root directory for new, moved, or missing files. Report changes. |
+| `refresh` | Scan the root directory for new, moved, or missing files. Report changes. Also indexes new files in FTS. |
 | `list [--sort FIELD] [--category CAT]` | Display all cataloged files in a table. |
-| `search <query>` | Search entries by filename, title, or keywords. |
+| `search <query>` | Search entries by filename or any metadata value (LIKE-based). |
+| `fts_search <query>` | Full-text search using the FTS5 index. Supports phrases and boolean operators. |
+| `reindex` | Rebuild the FTS index from scratch (re-extracts text from all cataloged files). |
 | `show <hash_prefix>` | Show full details for an entry (accepts partial hash). |
 | `update <hash_prefix> <field> <value>` | Update a single metadata field for an entry. |
 | `edit <hash_prefix>` | Interactively edit all metadata fields for an entry. |
 | `delete <hash_prefix>` | Remove an entry from the database (does not delete the file). |
 | `delete-old` | Permanently remove all entries flagged as MISSING from the database. |
 | `export [path]` | Export the entire database to a JSON file. Default: `data/library_export.json`. |
+| `suggest <hash_prefix>` | Run the extraction pipeline for one entry; display draft suggestions with source and confidence. Auto-committed fields are marked. |
+| `suggest_all` | Run extraction for all entries where `authors`, `year`, or `keywords` is empty. |
+| `commit <hash_prefix>` | Commit the pending draft for one entry to the metadata table. |
+| `commit_all` | Commit all pending drafts across all entries. |
 | `stats` | Show summary statistics (total files, by genre, missing files, etc.). |
 | `help` | Show available commands. |
 | `quit` | Exit the program. |
@@ -214,9 +376,11 @@ The CLI uses Python's built-in `cmd` module for an interactive REPL-style interf
 ```
 1. User runs: python __main__.py --cli   (or --gui for browser mode)
 2. No library.db exists → create SQLite database with tables
-3. No meta_config.json exists → generate defaults (scan_directories: ["."])
-4. Auto-trigger `refresh` → scan all matching files, add to database with empty metadata
-5. Enter interactive CLI loop  (or open browser to http://localhost:5000)
+3. No fts.db exists → create FTS5 virtual table
+4. No meta_config.json exists → generate defaults (scan_directories: ["."])
+5. Auto-trigger `refresh` → scan all matching files, add to database with empty metadata,
+   extract text and index in fts.db
+6. Enter interactive CLI loop  (or open browser to http://localhost:5000)
 ```
 
 ### 6.2 Refresh (Incremental Scan)
@@ -229,7 +393,9 @@ The CLI uses Python's built-in `cmd` module for an interactive REPL-style interf
        a. Set genre to the file's parent folder name (e.g. ./Bearings/file.pdf → "Bearings")
        b. If the folder name is not in meta_config.json genre choices, add it and save config
        c. Files in the scan root (no parent folder) get the default empty genre
-   - Hash in database but file gone → flag as MISSING (do not auto-delete)
+       d. Extract document text and index in fts.db
+   - Hash in database but file gone → flag as MISSING (do not auto-delete);
+       remove from fts.db
 3. Print summary: N new, N moved, N missing
 ```
 
@@ -242,7 +408,58 @@ The CLI uses Python's built-in `cmd` module for an interactive REPL-style interf
    - Prompt for new value (Enter to keep current)
    - For "choice" fields: show numbered options
    - For "list" fields: comma-separated input
-4. Validate → save
+4. Validate → save to library.db
+5. Rebuild FTS entry for this document (DELETE + INSERT in fts.db)
+```
+
+### 6.4 FTS Indexing on Refresh
+```
+1. refresh() scans directories (existing logic, unchanged)
+2. For each NEW file added to library.db:
+   a. Resolve absolute path via scan_dirs
+   b. extract_text(abs_path) → body string (empty string if extraction fails)
+   c. Build metadata_text = concatenate all text metadata field values
+   d. index_document(fts_conn, file_hash, filename, metadata_text, body)
+3. For each MISSING file hash: remove_document(fts_conn, file_hash)
+4. Commit fts.db
+```
+
+### 6.5 Full Reindex
+```
+1. User runs: reindex (CLI) or POST /reindex (GUI)
+2. rebuild_index() issues DELETE FROM documents_fts (truncate)
+3. Iterates all non-missing entries in library.db
+4. For each: extract_text + index_document
+5. Commits fts.db; returns count of documents indexed
+```
+
+### 6.6 Metadata Extraction (Suggest)
+```
+1. User runs: suggest <hash> (CLI) or clicks "Suggest Metadata" in detail view (GUI)
+2. Resolve hash prefix → entry; load current metadata
+3. Run extract_metadata(abs_path, current_metadata, ai_config):
+   a. Layer 1: fitz.open(path).metadata → title/authors/year at high confidence
+   b. Layer 2: filename/folder regex heuristics → fills remaining empty fields
+   c. Layer 3a (AI disabled): first-page text structural heuristics
+      Layer 3b (AI enabled): POST prompt to Gemini or OpenAI → parse JSON response
+4. For each extracted field:
+   - Store in metadata_draft table (upsert_draft)
+   - If confidence >= auto_commit_threshold: also write to metadata + delete draft
+5. Return results dict; flash summary to user
+```
+
+### 6.7 Draft Commit / Discard
+```
+Commit:
+1. User runs: commit <hash> (CLI) or clicks "Commit Draft" in detail view (GUI)
+2. Copy all metadata_draft rows for that file_hash into the metadata table
+3. Delete all metadata_draft rows for that file_hash
+4. Rebuild FTS entry (_sync_fts_entry) so search reflects new values
+
+Discard:
+1. User runs: (no CLI command needed) or clicks "Discard Draft" in detail view (GUI)
+2. DELETE FROM metadata_draft WHERE file_hash = ?
+3. metadata table is unchanged
 ```
 
 ---
@@ -252,6 +469,7 @@ The CLI uses Python's built-in `cmd` module for an interactive REPL-style interf
 | Decision | Rationale |
 |---|---|
 | **SQLite for library data** | Single file, built into Python, crash-safe (ACID), fast incremental updates. Readable by external tools. |
+| **Separate `fts.db`** | Preserves `library.db` integrity. FTS index is derived and re-buildable; losing it is not data loss. |
 | **JSON for metadata config** | Small, human-edited file. Easy to read and modify in any text editor. |
 | **Separate metadata table** | EAV-style storage means adding/removing metadata fields requires zero schema changes. |
 | **Content hash for identity** | Survives file renames and moves. Avoids duplicate entries. |
@@ -260,14 +478,24 @@ The CLI uses Python's built-in `cmd` module for an interactive REPL-style interf
 | **JSON export command** | Provides human-readable snapshots and interop with tools that need JSON input. |
 | **`cmd` module for CLI** | Built-in, no dependencies, supports tab completion and history. |
 | **Flask for GUI** | Lightweight, single dependency, renders in any browser. Localhost-only (not hosted). |
-| **CLI / GUI parity** | Both interfaces call the same `NHILibrarian` API. No feature is exclusive to either mode. |
+| **CLI / GUI parity** | Both interfaces call the same `ScribeFTS` API. No feature is exclusive to either mode. |
+| **FTS5 `unicode61` tokenizer** | Correct Unicode segmentation; handles Japanese characters without issue. |
+| **`fts_search()` alongside `search()`** | LIKE search remains for substring/metadata use. FTS adds document-body search without replacing existing behavior. |
+| **DELETE + INSERT for FTS updates** | FTS5 `UPDATE` does not work correctly on virtual tables; delete-then-insert is the canonical pattern. |
+| **PyMuPDF for text extraction** | Fast, handles Unicode/Japanese correctly, single wheel dependency. `body` left empty if import fails, so FTS degrades gracefully without the library. |
+| **`metadata_draft` table (additive)** | Draft staging uses the same SQLite connection as the main catalog. ON DELETE CASCADE keeps draft rows in sync with entry deletions. Adding the table to `open_db()` means no migration step is needed. |
+| **Waterfall extraction with sentinel** | Each layer fills only fields that previous layers left empty. Fields already in the database are marked with a sentinel `FieldDraft(source="skip")` before layer 2 runs, preventing any layer from overwriting confirmed metadata. |
+| **Auto-commit threshold** | Allows hands-off operation for high-confidence extractions (Layer 1 PDF metadata) while staging uncertain values (Layer 2/3 heuristics) for human review. Default 0.8 keeps all non-AI suggestions as drafts. |
+| **`urllib.request` for AI calls** | Zero new dependencies. All errors are caught; callers receive `None` and fall back to Layer 3a heuristics transparently. |
+| **Separate `ai_config.json`** | AI credentials are kept outside `meta_config.json` to avoid accidentally exporting API keys with the document catalog. |
 
 ---
 
 ## 8. Dependencies
 
-- **Python 3.14+** (standard library: `sqlite3`, `json`, `hashlib`, `pathlib`, `cmd`, `webbrowser`)
+- **Python 3.14+** (standard library: `sqlite3`, `json`, `hashlib`, `pathlib`, `cmd`, `webbrowser`, `urllib.request`)
 - **Flask** (`pip install flask`) — required for GUI mode only; CLI mode has zero external dependencies
+- **PyMuPDF** (`pip install pymupdf`) — required for PDF text extraction in FTS and Layer 1/3 extraction; optional (features degrade gracefully if absent)
 
 ---
 
@@ -275,33 +503,42 @@ The CLI uses Python's built-in `cmd` module for an interactive REPL-style interf
 
 ### 9.1 Overview
 
-The GUI runs a local Flask development server (`localhost:5000`) and opens the default browser automatically. It is **not** a hosted web application — it serves only the local user. All operations go through the same `NHILibrarian` API used by the CLI.
+The GUI runs a local Flask development server (`localhost:5000`) and opens the default browser automatically. It is **not** a hosted web application — it serves only the local user. All operations go through the same `ScribeFTS` API used by the CLI.
 
 ### 9.2 Routes
 
 | Route | Method | Description |
 |---|---|---|
 | `/` | GET | Main library table — lists all entries with columns for filename, path, genre, status. Supports sorting and search via query params. |
-| `/refresh` | POST | Trigger a directory scan. Redirect back to `/` with a flash summary (N new, N moved, N missing). |
+| `/refresh` | POST | Trigger a directory scan (also indexes new files in FTS). Redirect back to `/` with a flash summary. |
 | `/entry/<hash_prefix>` | GET | Detail view for a single entry — all file info and metadata fields displayed. |
-| `/entry/<hash_prefix>/edit` | GET/POST | Edit form for a single entry's metadata. GET shows pre-filled form; POST validates and saves. |
-| `/entry/<hash_prefix>/delete` | POST | Delete a single entry from the database. Redirect to `/`. |
+| `/entry/<hash_prefix>/edit` | GET/POST | Edit form for a single entry's metadata. GET shows pre-filled form; POST validates and saves, then refreshes FTS entry. |
+| `/entry/<hash_prefix>/delete` | POST | Delete a single entry from the database and FTS index. Redirect to `/`. |
 | `/entry/<hash_prefix>/open` | GET | Open the file in the user's OS-default application and redirect back to the current list/detail page. |
-| `/delete-old` | POST | Remove all MISSING entries from the database. Redirect to `/` with count. |
-| `/search` | GET | Search results page. Query param `q` passed to `NHILibrarian.search()`. |
+| `/delete-old` | POST | Remove all MISSING entries from the database and FTS index. Redirect to `/` with count. |
+| `/search` | GET | Metadata search results page (LIKE-based). Query param `q` passed to `ScribeFTS.search()`. |
+| `/fts_search` | GET | Full-text search results page (FTS5). Query param `q` passed to `ScribeFTS.fts_search()`. |
+| `/reindex` | POST | Trigger a full FTS reindex. Flash the count. Redirect to `/`. |
 | `/export` | POST | Trigger JSON export. Flash the output path. |
 | `/stats` | GET | Summary statistics page (total, by genre, missing count). |
-| `/config` | GET/POST | View and edit `meta_config.json`. GET shows current config in an editable form; POST validates and saves via `NHILibrarian.save_meta_config()`. |
+| `/config` | GET/POST | View and edit `meta_config.json`. GET shows current config in an editable form; POST validates and saves. |
+| `/suggest/<hash_prefix>` | POST | Run the extraction pipeline for one entry; store results as drafts; auto-commit high-confidence fields. Redirect to detail page with flash summary. |
+| `/commit/<hash_prefix>` | POST | Commit the pending draft for one entry to the metadata table. |
+| `/discard/<hash_prefix>` | POST | Discard the pending draft for one entry without committing. |
+| `/suggest_all` | POST | Run extraction for all entries with empty `authors`/`year`/`keywords`. Flash result summary. |
+| `/commit_all` | POST | Commit all pending drafts across all entries. Flash count. |
+| `/ai_config` | GET/POST | View and edit `ai_config.json` (provider, API key, model, threshold, endpoint). |
 
 ### 9.3 Templates
 
 | Template | Purpose |
 |---|---|
-| `base.html` | Shared layout: nav bar (Library, Stats, Config, Refresh button), flash message area, CSS link. |
-| `library.html` | Main table with sortable column headers, search bar, per-row Edit/Delete links, and a Delete Old button. |
-| `detail.html` | Read-only entry view + Edit button. Edit mode renders appropriate input widgets per field type (text input, dropdown for `choice`, tag input for `list`). |
+| `base.html` | Shared layout: nav bar (Library, Stats, Config, AI Config, Refresh button), flash message area, CSS link. |
+| `library.html` | Main table with sortable column headers, search bar with Metadata/Full-text mode toggle, Title/Author/Year columns, per-row `[draft]` badge when a pending draft exists, Suggest All / Commit All buttons, and column filter inputs. |
+| `detail.html` | Read-only entry view + Edit button + Suggest Metadata button. When a draft exists, shows a "Suggested (Draft)" card with field values, source, and confidence, plus Commit Draft and Discard Draft buttons. |
 | `stats.html` | Summary counts, genre breakdown. |
 | `config.html` | JSON editor for `meta_config.json` — displays current fields, allows adding/removing/reordering fields, and editing `scan_directories` and `file_extensions`. |
+| `ai_config.html` | Form to configure `ai_config.json`: Enable toggle, provider dropdown (Gemini / OpenAI-compatible), API key, model, auto-commit threshold, and OpenAI endpoint (shown only when OpenAI provider selected). |
 
 In the default list view (`library.html`), each **Path** cell is clickable and calls `/entry/<hash_prefix>/open`, which opens the file with the system default app for its file type.
 
@@ -311,5 +548,3 @@ In the default list view (`library.html`), each **Path** cell is clickable and c
 - **Flask flash messages** for operation feedback (success/error).
 - **UTF-8 throughout** — browser natively handles Japanese filenames.
 - **No authentication** — localhost-only, single-user tool.
-
----

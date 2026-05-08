@@ -3,17 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Librarian{% endblock %}</title>
+    <title>{% block title %}ScribeFTS{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    {% block extra_head %}{% endblock %}
 </head>
 <body>
     <nav>
-        <span class="brand">Librarian</span>
+        <span class="brand">ScribeFTS</span>
         <a href="{{ url_for('index') }}">Library</a>
         <a href="{{ url_for('stats') }}">Stats</a>
         <a href="{{ url_for('config_page') }}">Config</a>
+        <a href="{{ url_for('ai_config_page') }}">AI Config</a>
         <form action="{{ url_for('refresh') }}" method="post">
-            <button type="submit">Refresh</button>
+            <button type="submit" title="Scan configured directories for new, moved, or missing files; index new files in FTS">Refresh</button>
+        </form>
+        <form action="{{ url_for('reindex_page') }}" method="get">
+            <button type="submit" title="Rebuild the FTS index from scratch (re-extracts text from all cataloged files)">Reindex FTS</button>
         </form>
     </nav>
 

@@ -1,5 +1,5 @@
-# # NHI_Librarian
-Simple tool to organize documents using customizable meta data
+# # ScribeFTS
+Simple tool to organize documents using customizable meta data, with full-text search via FTS5
 
 ## Tech Stack
 - Python3.14 or above

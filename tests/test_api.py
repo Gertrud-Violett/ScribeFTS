@@ -4,10 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lib.api import NHILibrarian
+from lib.api import ScribeFTS
 
 
-class TestNHILibrarian(unittest.TestCase):
+class TestScribeFTS(unittest.TestCase):
     """Integration tests using real temp directories and sample files."""
 
     def setUp(self):
@@ -23,7 +23,7 @@ class TestNHILibrarian(unittest.TestCase):
         sub.mkdir()
         (sub / "paper3.pdf").write_bytes(b"PDF content 3")
 
-        self.lib = NHILibrarian(
+        self.lib = ScribeFTS(
             data_dir=str(self.data_dir),
             scan_dirs=[str(self.scan_dir)],
         )
@@ -150,6 +150,111 @@ class TestNHILibrarian(unittest.TestCase):
     def test_save_meta_config_invalid(self):
         with self.assertRaises(ValueError):
             self.lib.save_meta_config({"no_fields_key": True})
+
+    def test_fts_db_created(self):
+        """fts.db is created alongside library.db on init."""
+        self.assertTrue(self.lib.fts_db_path.exists())
+
+    def test_fts_search_after_refresh(self):
+        """fts_search returns results after refresh indexes files."""
+        self.lib.refresh()
+        results = self.lib.fts_search("paper1")
+        filenames = [e["filename"] for e in results]
+        self.assertIn("paper1.pdf", filenames)
+
+    def test_reindex_fts(self):
+        self.lib.refresh()
+        count = self.lib.reindex_fts()
+        self.assertEqual(count, 3)
+
+    def test_fts_search_removed_after_delete(self):
+        self.lib.refresh()
+        entries = self.lib.list_all()
+        fh = entries[0]["file_hash"]
+        filename = entries[0]["filename"]
+        self.lib.delete_entry(fh[:7])
+        results = self.lib.fts_search(Path(filename).stem)
+        result_filenames = [e["filename"] for e in results]
+        self.assertNotIn(filename, result_filenames)
+
+    # -- Draft staging tests --
+
+    def _get_first_hash(self):
+        self.lib.refresh()
+        return self.lib.list_all()[0]["file_hash"]
+
+    def test_get_draft_empty_initially(self):
+        fh = self._get_first_hash()
+        draft = self.lib.get_draft(fh)
+        self.assertEqual(draft, {})
+
+    def test_get_pending_draft_hashes_empty(self):
+        self._get_first_hash()
+        pending = self.lib.get_pending_draft_hashes()
+        self.assertEqual(pending, set())
+
+    def test_discard_draft_noop_when_empty(self):
+        fh = self._get_first_hash()
+        self.lib.discard_draft(fh)  # should not raise
+        self.assertEqual(self.lib.get_draft(fh), {})
+
+    def test_commit_all_drafts_empty(self):
+        self._get_first_hash()
+        count = self.lib.commit_all_drafts()
+        self.assertEqual(count, 0)
+
+    def test_suggest_all_skips_missing(self):
+        """suggest_all should not crash when entries are missing from disk."""
+        self.lib.refresh()
+        # Remove a file so one entry becomes missing
+        (self.scan_dir / "paper1.pdf").unlink()
+        self.lib.refresh()
+        counts = self.lib.suggest_all()
+        # Should return a dict with 'suggested' and 'auto_committed' keys
+        self.assertIn("suggested", counts)
+        self.assertIn("auto_committed", counts)
+
+    def test_get_ai_config_creates_default(self):
+        cfg = self.lib.get_ai_config()
+        self.assertIn("enabled", cfg)
+        self.assertIn("provider", cfg)
+        self.assertIn("api_key", cfg)
+        self.assertIn("model", cfg)
+        self.assertIn("auto_commit_threshold", cfg)
+        self.assertFalse(cfg["enabled"])
+
+    def test_save_ai_config_valid(self):
+        self.lib.save_ai_config({
+            "enabled": True,
+            "provider": "gemini",
+            "api_key": "test-key",
+            "model": "gemini-1.5-flash",
+            "auto_commit_threshold": 0.9,
+            "openai_endpoint": "https://api.openai.com/v1/chat/completions",
+        })
+        cfg = self.lib.get_ai_config()
+        self.assertEqual(cfg["api_key"], "test-key")
+        self.assertAlmostEqual(cfg["auto_commit_threshold"], 0.9)
+
+    def test_save_ai_config_invalid_provider(self):
+        with self.assertRaises(ValueError):
+            self.lib.save_ai_config({
+                "enabled": False,
+                "provider": "unknown_provider",
+                "api_key": "",
+                "model": "x",
+                "auto_commit_threshold": 0.8,
+            })
+
+    def test_save_ai_config_invalid_threshold(self):
+        with self.assertRaises(ValueError):
+            self.lib.save_ai_config({
+                "enabled": False,
+                "provider": "gemini",
+                "api_key": "",
+                "model": "x",
+                "auto_commit_threshold": 1.5,
+            })
 
 
 if __name__ == "__main__":

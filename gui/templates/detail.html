@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ entry.filename }} - NHI Librarian{% endblock %}
+{% block title %}{{ entry.filename }} - ScribeFTS{% endblock %}
 {% block content %}
 
 {% if edit_mode %}
@@ -66,11 +66,38 @@
     </dl>
 </div>
 
-<a href="{{ url_for('edit_entry', hash_prefix=entry.file_hash) }}" class="btn btn-primary">Edit</a>
-<form action="{{ url_for('delete_entry_route', hash_prefix=entry.file_hash) }}" method="post" style="display:inline" onsubmit="return confirm('Delete this entry?');">
-    <button class="btn btn-danger" type="submit">Delete</button>
+{% if draft %}
+<div class="card" style="border-left: 4px solid #f0ad4e;">
+    <h2>Suggested (Draft)</h2>
+    <dl>
+        {% for field_name, info in draft.items() %}
+        <dt>{{ field_name }}</dt>
+        <dd>
+            {{ info.value or '-' }}
+            <small style="color:#888;">&nbsp;[{{ info.source }}, confidence={{ "%.0f"|format(info.confidence * 100) }}%]</small>
+        </dd>
+        {% endfor %}
+    </dl>
+    <form action="{{ url_for('commit_entry', hash_prefix=entry.file_hash) }}" method="post" style="display:inline">
+        <button class="btn btn-primary" type="submit" title="Commit suggested values to the metadata catalog">Commit Draft</button>
+    </form>
+    <form action="{{ url_for('discard_entry_draft', hash_prefix=entry.file_hash) }}" method="post" style="display:inline">
+        <button class="btn btn-secondary" type="submit" title="Discard suggested values without applying them">Discard Draft</button>
+    </form>
+</div>
+{% endif %}
+
+<a href="{{ url_for('edit_entry', hash_prefix=entry.file_hash) }}" class="btn btn-primary" title="Edit all metadata fields for this entry">Edit</a>
+<form action="{{ url_for('open_entry_file', hash_prefix=entry.file_hash) }}" method="get" style="display:inline">
+    <button class="btn btn-secondary" type="submit" title="Open the file with your OS-default application">Open File</button>
 </form>
-<a href="{{ url_for('index') }}" class="btn btn-secondary">Back</a>
+<form action="{{ url_for('suggest_entry', hash_prefix=entry.file_hash) }}" method="post" style="display:inline">
+    <button class="btn btn-secondary" type="submit" title="Run the extraction pipeline for this entry and show draft suggestions">Suggest Metadata</button>
+</form>
+<form action="{{ url_for('delete_entry_route', hash_prefix=entry.file_hash) }}" method="post" style="display:inline" onsubmit="return confirm('Delete this entry?');">
+    <button class="btn btn-danger" type="submit" title="Remove this entry from the database (file is not deleted)">Delete</button>
+</form>
+<a href="{{ url_for('index') }}" class="btn btn-secondary" title="Return to library">Back</a>
 {% endif %}
 
 {% endblock %}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""NHI Librarian — Interactive CLI for document cataloging."""
+"""ScribeFTS — Interactive CLI for document cataloging."""
 
 import cmd
 import json
@@ -15,16 +15,16 @@ _project_root = Path(__file__).resolve().parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-from lib.api import NHILibrarian
+from lib.api import ScribeFTS
 
 
-class NHILibrarianCLI(cmd.Cmd):
-    """Interactive REPL for NHI Librarian."""
+class ScribeFTSCLI(cmd.Cmd):
+    """Interactive REPL for ScribeFTS."""
 
-    intro = "NHI Librarian - type 'help' for available commands.\n"
-    prompt = "nhi> "
+    intro = "ScribeFTS - type 'help' for available commands.\n"
+    prompt = "scribe> "
 
-    def __init__(self, librarian: NHILibrarian):
+    def __init__(self, librarian: ScribeFTS):
         super().__init__()
         self.lib = librarian
 
@@ -76,7 +76,7 @@ class NHILibrarianCLI(cmd.Cmd):
         print(f"\n  Total: {len(entries)}")
 
     def do_search(self, arg):
-        """Search entries by filename, title, or keywords. Usage: search <query>"""
+        """Search entries by filename or metadata values (LIKE-based). Usage: search <query>"""
         if not arg.strip():
             print("  Usage: search <query>")
             return
@@ -89,6 +89,40 @@ class NHILibrarianCLI(cmd.Cmd):
         for entry in results:
             print(f"  {entry['file_hash'][:7]}  {entry['filename']}")
         print(f"\n  {len(results)} match(es)")
+
+    def do_fts_search(self, arg):
+        """Full-text search using the FTS5 index. Usage: fts_search <query>"""
+        if not arg.strip():
+            print("  Usage: fts_search <query>")
+            return
+
+        try:
+            results = self.lib.fts_search(arg.strip())
+        except Exception as e:
+            print(f"  FTS search error: {e}")
+            return
+
+        if not results:
+            print("  No matches found.")
+            return
+
+        for entry in results:
+            print(f"  {entry['file_hash'][:7]}  {entry['filename']}")
+        print(f"\n  {len(results)} match(es)")
+
+    def do_reindex(self, _arg):
+        """Rebuild the FTS index from scratch (re-extracts text from all cataloged files)."""
+        print("  Rebuilding FTS index...")
+
+        def progress(current, total):
+            pct = (current / total * 100) if total > 0 else 0
+            bar_len = 30
+            filled = int(bar_len * current / total) if total > 0 else 0
+            bar = '█' * filled + '░' * (bar_len - filled)
+            print(f"\r  [{bar}] {current}/{total} ({pct:.0f}%)", end='', flush=True)
+
+        count = self.lib.reindex_fts(progress_callback=progress)
+        print(f"\n  Indexed {count} document(s).")
 
     def do_show(self, arg):
         """Show full details for an entry. Usage: show <hash_prefix>"""
@@ -247,8 +281,71 @@ class NHILibrarianCLI(cmd.Cmd):
             for genre, count in sorted(genre_counts.items()):
                 print(f"    {genre}: {count}")
 
+    def do_suggest(self, arg):
+        """Run the extraction pipeline for one entry and show draft suggestions. Usage: suggest <hash_prefix>"""
+        if not arg.strip():
+            print("  Usage: suggest <hash_prefix>")
+            return
+
+        try:
+            result = self.lib.suggest_metadata(arg.strip())
+        except ValueError as e:
+            print(f"  Error: {e}")
+            return
+
+        entry = self.lib.get_entry(arg.strip())
+        filename = entry["filename"] if entry else arg.strip()
+        print(f"  Suggested for {filename}:")
+        for field_name, info in result.items():
+            status = "AUTO-COMMITTED" if info.get("auto_committed") else "DRAFT - run 'commit' to apply"
+            print(
+                f"    {field_name:<12} \"{info['value']}\""
+                f"  [{info['source']}, confidence={info['confidence']:.0%}]"
+                f"  <- {status}"
+            )
+
+    def do_suggest_all(self, _arg):
+        """Run extraction for all entries with missing author/year/keywords."""
+        print("  Running extraction for qualifying entries...")
+
+        def progress(current, total):
+            pct = (current / total * 100) if total > 0 else 0
+            bar_len = 30
+            filled = int(bar_len * current / total) if total > 0 else 0
+            bar = '█' * filled + '░' * (bar_len - filled)
+            print(f"\r  [{bar}] {current}/{total} ({pct:.0f}%)", end='', flush=True)
+
+        counts = self.lib.suggest_all(progress_callback=progress)
+        print(f"\n  Processed: {counts['suggested']} entry/entries")
+        print(f"  Auto-committed: {counts['auto_committed']} field(s)")
+
+    def do_commit(self, arg):
+        """Commit pending draft for one entry to the metadata table. Usage: commit <hash_prefix>"""
+        if not arg.strip():
+            print("  Usage: commit <hash_prefix>")
+            return
+
+        draft = self.lib.get_draft(arg.strip())
+        if not draft:
+            print("  No pending draft for that entry.")
+            return
+
+        try:
+            self.lib.commit_draft(arg.strip())
+            print(f"  Draft committed ({len(draft)} field(s) updated).")
+        except ValueError as e:
+            print(f"  Error: {e}")
+
+    def do_commit_all(self, _arg):
+        """Commit all pending drafts across all entries."""
+        count = self.lib.commit_all_drafts()
+        if count:
+            print(f"  Committed drafts for {count} entry/entries.")
+        else:
+            print("  No pending drafts to commit.")
+
     def do_quit(self, _arg):
-        """Exit NHI Librarian."""
+        """Exit ScribeFTS."""
         print("  Goodbye.")
         return True
 
@@ -259,14 +356,14 @@ class NHILibrarianCLI(cmd.Cmd):
 
 def main():
     data_dir = str(Path(__file__).resolve().parent.parent / "data")
-    librarian = NHILibrarian(data_dir=data_dir)
+    librarian = ScribeFTS(data_dir=data_dir)
 
     # Auto-refresh on first run
     print("Scanning configured directories...")
     report = librarian.refresh()
     print(f"  Found {len(report.new)} new file(s).\n")
 
-    cli = NHILibrarianCLI(librarian)
+    cli = ScribeFTSCLI(librarian)
     cli.cmdloop()
 
 

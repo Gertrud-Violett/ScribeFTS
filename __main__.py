@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Allow running NHI Librarian directly from the repository root.
+"""Allow running ScribeFTS directly from the repository root.
 
 Usage:
     python __main__.py          # defaults to CLI mode
@@ -13,8 +13,8 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="NHI_Librarian",
-        description="Document cataloging tool",
+        prog="ScribeFTS",
+        description="Document cataloging tool with full-text search",
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--cli", action="store_true", help="Launch interactive CLI (default)")
@@ -25,7 +25,7 @@ def main():
         from gui.app import run_gui
         run_gui()
     else:
-        from bin.NHI_Librarian import main as cli_main
+        from bin.ScribeFTS import main as cli_main
         cli_main()
 
 

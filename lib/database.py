@@ -1,4 +1,4 @@
-"""SQLite database operations for the NHI Librarian catalog."""
+"""SQLite database operations for the ScribeFTS catalog."""
 
 import json
 import sqlite3
@@ -32,6 +32,17 @@ def open_db(db_path: str) -> sqlite3.Connection:
             file_hash   TEXT NOT NULL,
             field_name  TEXT NOT NULL,
             field_value TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (file_hash, field_name),
+            FOREIGN KEY (file_hash) REFERENCES files(file_hash) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS metadata_draft (
+            file_hash   TEXT NOT NULL,
+            field_name  TEXT NOT NULL,
+            field_value TEXT NOT NULL DEFAULT '',
+            source      TEXT NOT NULL,
+            confidence  REAL NOT NULL DEFAULT 0.0,
+            created_at  TEXT NOT NULL,
             PRIMARY KEY (file_hash, field_name),
             FOREIGN KEY (file_hash) REFERENCES files(file_hash) ON DELETE CASCADE
         );
@@ -153,14 +164,30 @@ def find_entries(conn: sqlite3.Connection, query: str) -> list[dict]:
     return results
 
 
-def list_entries(conn: sqlite3.Connection, sort_by: str = "filename",
-                 filters: dict | None = None) -> list[dict]:
-    """List/filter/sort all entries."""
-    allowed_sort = {"filename", "date_added", "date_modified", "file_size", "rel_path"}
-    if sort_by not in allowed_sort:
-        sort_by = "filename"
+_FILES_COLUMNS = {"filename", "date_added", "date_modified", "file_size", "rel_path", "missing"}
 
-    rows = conn.execute(f"SELECT file_hash FROM files ORDER BY {sort_by}").fetchall()
+
+def list_entries(conn: sqlite3.Connection, sort_by: str = "genre",
+                 sort_order: str = "asc", filters: dict | None = None) -> list[dict]:
+    """List/filter/sort all entries.
+
+    sort_by may be a files-table column or any metadata field name.
+    sort_order is 'asc' or 'desc'.
+    """
+    safe_order = "DESC" if str(sort_order).upper() == "DESC" else "ASC"
+
+    if sort_by in _FILES_COLUMNS:
+        rows = conn.execute(
+            f"SELECT file_hash FROM files ORDER BY {sort_by} {safe_order}"
+        ).fetchall()
+    else:
+        # Metadata field: sort via LEFT JOIN so entries without the field sort last (empty string)
+        rows = conn.execute(
+            f"SELECT f.file_hash FROM files f "
+            f"LEFT JOIN metadata m ON f.file_hash = m.file_hash AND m.field_name = ? "
+            f"ORDER BY COALESCE(LOWER(m.field_value), '') {safe_order}",
+            (sort_by,),
+        ).fetchall()
 
     results = []
     for row in rows:
@@ -198,3 +225,84 @@ def export_json(conn: sqlite3.Connection, out_path: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(entries, f, indent=2, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# Draft staging CRUD
+# ---------------------------------------------------------------------------
+
+def upsert_draft(
+    conn: sqlite3.Connection,
+    file_hash: str,
+    field_name: str,
+    field_value: str,
+    source: str,
+    confidence: float,
+) -> None:
+    """Insert or replace a single draft field for a file."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO metadata_draft (file_hash, field_name, field_value, source, confidence, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(file_hash, field_name) DO UPDATE SET "
+        "field_value = excluded.field_value, source = excluded.source, "
+        "confidence = excluded.confidence, created_at = excluded.created_at",
+        (file_hash, field_name, field_value, source, confidence, now),
+    )
+    conn.commit()
+
+
+def get_draft(conn: sqlite3.Connection, file_hash: str) -> dict:
+    """Return all draft fields for one file as {field_name: {value, source, confidence}}."""
+    rows = conn.execute(
+        "SELECT field_name, field_value, source, confidence FROM metadata_draft WHERE file_hash = ?",
+        (file_hash,),
+    ).fetchall()
+    return {
+        r["field_name"]: {
+            "value": r["field_value"],
+            "source": r["source"],
+            "confidence": r["confidence"],
+        }
+        for r in rows
+    }
+
+
+def get_all_drafts(conn: sqlite3.Connection) -> dict[str, dict]:
+    """Return all pending drafts keyed by file_hash."""
+    rows = conn.execute(
+        "SELECT file_hash, field_name, field_value, source, confidence FROM metadata_draft"
+    ).fetchall()
+    result: dict[str, dict] = {}
+    for r in rows:
+        fh = r["file_hash"]
+        if fh not in result:
+            result[fh] = {}
+        result[fh][r["field_name"]] = {
+            "value": r["field_value"],
+            "source": r["source"],
+            "confidence": r["confidence"],
+        }
+    return result
+
+
+def commit_draft(conn: sqlite3.Connection, file_hash: str) -> None:
+    """Copy all draft rows for a file into the metadata table, then delete them."""
+    rows = conn.execute(
+        "SELECT field_name, field_value FROM metadata_draft WHERE file_hash = ?",
+        (file_hash,),
+    ).fetchall()
+    for r in rows:
+        conn.execute(
+            "INSERT INTO metadata (file_hash, field_name, field_value) VALUES (?, ?, ?) "
+            "ON CONFLICT(file_hash, field_name) DO UPDATE SET field_value = excluded.field_value",
+            (file_hash, r["field_name"], r["field_value"]),
+        )
+    conn.execute("DELETE FROM metadata_draft WHERE file_hash = ?", (file_hash,))
+    conn.commit()
+
+
+def delete_draft(conn: sqlite3.Connection, file_hash: str) -> None:
+    """Discard all pending drafts for a file without committing."""
+    conn.execute("DELETE FROM metadata_draft WHERE file_hash = ?", (file_hash,))
+    conn.commit()
