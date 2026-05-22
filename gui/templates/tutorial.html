@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}Tutorial — ScribeFTS{% endblock %}
+
+{% block extra_head %}
+<style>
+.tut-section { margin-bottom:2rem; }
+.tut-section h2 { border-bottom:2px solid var(--primary,#6c9dc6); padding-bottom:0.4rem; margin-bottom:1rem; }
+.tut-section h3 { margin:1rem 0 0.4rem; }
+.tut-step { display:flex; gap:0.75rem; align-items:flex-start; margin-bottom:0.6rem; }
+.tut-step-num { background:var(--primary,#6c9dc6); color:#fff; border-radius:50%; width:1.4rem; height:1.4rem; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:0.8rem; font-weight:700; margin-top:0.1rem; }
+.tut-step-body { flex:1; }
+.tut-tip { background:var(--surface,#f5f7fa); border-left:3px solid var(--primary,#6c9dc6); padding:0.6rem 0.9rem; margin:0.75rem 0; border-radius:0 4px 4px 0; font-size:0.9rem; }
+.tut-warn { background:#fff8e1; border-left:3px solid #f9a825; padding:0.6rem 0.9rem; margin:0.75rem 0; border-radius:0 4px 4px 0; font-size:0.9rem; }
+code { background:var(--surface,#f5f7fa); padding:0.1em 0.35em; border-radius:3px; font-size:0.88em; font-family:monospace; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1>Tutorial &amp; Setup Guide</h1>
+<p style="color:var(--text-muted); margin-bottom:1.5rem;">Everything you need to get started with ScribeFTS.</p>
+
+<!-- ── Section 1: Basic Usage ─────────────────────────────────────────── -->
+<div class="card tut-section">
+    <h2>1. Basic Usage</h2>
+
+    <h3>Adding files to your library</h3>
+    <p>There are two ways to add PDFs:</p>
+    <div class="tut-step"><div class="tut-step-num">A</div><div class="tut-step-body">
+        <strong>Passive scanning</strong> — Copy or move PDFs into any of your configured scan directories, then click <strong>Refresh</strong> in the navigation bar. ScribeFTS will detect the new files, deduplicate by content hash, and index them automatically.
+    </div></div>
+    <div class="tut-step"><div class="tut-step-num">B</div><div class="tut-step-body">
+        <strong>Manual upload</strong> — Click <strong>Upload</strong> in the navigation bar. A popup appears with two input options:
+        <ul style="margin:0.4rem 0 0 1.2rem; line-height:1.8;">
+            <li><strong>File</strong> — select a PDF from your computer using the file picker.</li>
+            <li><strong>Direct PDF URL</strong> — paste any direct link to a PDF (e.g. from arXiv).</li>
+        </ul>
+        Set the <strong>Save to directory</strong> field by typing a path or clicking <strong>Browse…</strong> to navigate your filesystem visually (single-click to highlight a folder, double-click to enter it). If the destination is outside your configured scan directories, a warning will appear — you can proceed anyway, but the file will not be indexed automatically until you add that path to your scan directories.
+    </div></div>
+
+    <h3>Using the Discovery Scout</h3>
+    <div class="tut-step"><div class="tut-step-num">1</div><div class="tut-step-body">Go to <strong>Discover</strong> in the navigation bar.</div></div>
+    <div class="tut-step"><div class="tut-step-num">2</div><div class="tut-step-body">Type keywords into the search bar (e.g. <em>transformer attention mechanism</em>). Results are fetched live from arXiv and show title, authors, year, and a short abstract.</div></div>
+    <div class="tut-step"><div class="tut-step-num">3</div><div class="tut-step-body">Click <strong>Download &amp; Register</strong> on any result. A dialog appears — choose the save directory (using Browse… if needed) and click <strong>Download</strong>. The PDF is fetched, saved, and indexed automatically.</div></div>
+    <div class="tut-tip">If the save directory is outside your scan directories, the same two-step warning flow applies as with manual upload.</div>
+
+    <h3>Searching your library</h3>
+    <p>The search bar in the Library view supports two modes:</p>
+    <ul style="margin:0.4rem 0 0 1.2rem; line-height:1.8;">
+        <li><strong>Metadata search</strong> — Searches filenames and all indexed metadata fields (title, authors, genre, keywords…).</li>
+        <li><strong>Full-text search</strong> — Uses the FTS5 index to search inside the full body text of indexed PDFs. Toggle the radio button next to the search bar.</li>
+    </ul>
+
+    <h3>Editing metadata</h3>
+    <p>Click any entry title to open the detail view, then click <strong>Edit</strong>. You can also click the pencil icon directly from the library list to open an inline edit modal.</p>
+</div>
+
+<!-- ── Section 2: AI Metadata Extraction ─────────────────────────────── -->
+<div class="card tut-section">
+    <h2>2. AI Metadata Extraction (Gemini)</h2>
+
+    <p>ScribeFTS can automatically extract the title, authors, year, and keywords from new PDFs by reading the first pages of each document and sending the text to the Gemini API.</p>
+
+    <h3>How to enable</h3>
+    <div class="tut-step"><div class="tut-step-num">1</div><div class="tut-step-body">
+        Get a free API key from <strong>Google AI Studio</strong> (<code>aistudio.google.com</code>) — no billing required for the free tier.
+    </div></div>
+    <div class="tut-step"><div class="tut-step-num">2</div><div class="tut-step-body">
+        Click <strong>API</strong> in the navigation bar, then select the <strong>API</strong> tab (the right-hand tab).
+    </div></div>
+    <div class="tut-step"><div class="tut-step-num">3</div><div class="tut-step-body">
+        Tick <strong>Enable AI Assist</strong>, select <em>Google Gemini</em> as provider, paste your key, and set the model (e.g. <code>gemini-1.5-flash</code>). Click <strong>Save</strong>.
+    </div></div>
+    <div class="tut-step"><div class="tut-step-num">4</div><div class="tut-step-body">
+        Click <strong>Refresh</strong>. New files will have metadata suggested automatically.
+    </div></div>
+
+    <h3>Draft vs. commit</h3>
+    <p>Extracted values are staged as <em>drafts</em> before being written to the database:</p>
+    <ul style="margin:0.4rem 0 0 1.2rem; line-height:1.8;">
+        <li>Fields extracted with confidence ≥ the <strong>auto-commit threshold</strong> (default 0.8) are committed immediately.</li>
+        <li>Lower-confidence fields appear as pending drafts — visible on the entry detail page — for your review before committing.</li>
+    </ul>
+    <p>Use <strong>Commit All</strong> on the Library page to accept all pending drafts at once.</p>
+
+    <div class="tut-tip">
+        <strong>OpenAI-compatible models</strong> also work — set Provider to <em>OpenAI-compatible</em> and supply your endpoint URL and key. This is useful for self-hosted models (Ollama, LocalAI, etc.).
+    </div>
+
+    <div class="tut-tip">
+        The <strong>Config</strong> tab (left-hand tab under <strong>API</strong>) is where you manage scan directories, file extensions, and custom metadata fields.
+    </div>
+</div>
+
+<!-- ── Section 3: Google Drive Sync & NotebookLM ─────────────────────── -->
+<div class="card tut-section">
+    <h2>3. Google Drive Sync &amp; NotebookLM Bridge</h2>
+
+    <p>You can sync your ScribeFTS library to Google Drive — and then point NotebookLM directly at that folder — without any API keys or OAuth flows. The trick is to use <strong>Google Drive for Desktop</strong>, which mounts your Drive as a local folder on your PC.</p>
+
+    <h3>Step-by-step</h3>
+    <div class="tut-step"><div class="tut-step-num">1</div><div class="tut-step-body">
+        Download and install <strong>Google Drive for Desktop</strong> from <code>google.com/drive/download</code>. Sign in with your Google account.
+    </div></div>
+    <div class="tut-step"><div class="tut-step-num">2</div><div class="tut-step-body">
+        After installation, a virtual drive appears on your system (e.g. <code>G:\My Drive\</code> on Windows). Any folder you place inside it is automatically synced to the cloud.
+    </div></div>
+    <div class="tut-step"><div class="tut-step-num">3</div><div class="tut-step-body">
+        In ScribeFTS, go to <strong>Workspace</strong> and use <em>Move Workspace</em> to relocate your workspace to a folder inside the Drive path — for example:<br>
+        <code>G:\My Drive\scribeFTS-library\data</code>
+    </div></div>
+    <div class="tut-step"><div class="tut-step-num">4</div><div class="tut-step-body">
+        Update your scan directory (in <strong>Config</strong>) to point to where your PDFs live under the Drive folder — for example:<br>
+        <code>G:\My Drive\scribeFTS-library\papers</code>
+    </div></div>
+    <div class="tut-step"><div class="tut-step-num">5</div><div class="tut-step-body">
+        ScribeFTS writes all database files and new PDFs into that folder. Drive for Desktop syncs them to the cloud silently in the background.
+    </div></div>
+    <div class="tut-step"><div class="tut-step-num">6</div><div class="tut-step-body">
+        In <strong>NotebookLM</strong> (<code>notebooklm.google.com</code>), create a new notebook, click <em>Add Source → Google Drive</em>, and select your synced papers folder. NotebookLM will index all PDFs as sources and allow you to query them with AI.
+    </div></div>
+
+    <div class="tut-tip">
+        <strong>No OAuth, no API keys.</strong> Google Drive for Desktop handles authentication at the OS level. ScribeFTS only reads and writes to the local filesystem — it never contacts Google's servers directly.
+    </div>
+
+    <div class="tut-warn">
+        <strong>Sync delay:</strong> Drive for Desktop syncs in the background. After adding new papers, allow a minute or two before they appear in your Google Drive and NotebookLM.
+    </div>
+
+    {% if scan_dirs %}
+    <h3>Your current scan directories</h3>
+    <ul style="margin:0.4rem 0 0 1.2rem; line-height:1.8;">
+        {% for sd in scan_dirs %}
+        <li><code>{{ sd | e }}</code></li>
+        {% endfor %}
+    </ul>
+    <p style="font-size:0.88rem; color:var(--text-muted);">Move your workspace so these paths fall inside your Google Drive folder to enable sync.</p>
+    {% endif %}
+</div>
+{% endblock %}

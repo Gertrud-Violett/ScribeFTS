@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% block title %}Discover — ScribeFTS{% endblock %}
+
+{% block extra_head %}
+<style>
+.discover-search { display:flex; gap:0.5rem; margin-bottom:1.5rem; }
+.discover-search input[type=text] { flex:1; padding:0.5rem 0.75rem; font-size:1rem; border:1px solid var(--border); border-radius:4px; }
+.discover-search button { white-space:nowrap; }
+.results-table { width:100%; border-collapse:collapse; font-size:0.9rem; }
+.results-table th { background:var(--surface); padding:0.5rem 0.75rem; text-align:left; border-bottom:2px solid var(--border); }
+.results-table td { padding:0.5rem 0.75rem; border-bottom:1px solid var(--border); vertical-align:top; }
+.results-table tr:hover td { background:var(--surface); }
+.abstract-cell { max-width:380px; color:var(--text-muted); font-size:0.82rem; }
+.arxiv-id { font-size:0.75rem; color:var(--text-muted); font-family:monospace; }
+.dl-spinner { display:none; width:14px; height:14px; border:2px solid #ccc; border-top-color:var(--primary); border-radius:50%; animation:spin 0.7s linear infinite; vertical-align:middle; margin-right:4px; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+/* Download modal */
+#dlModal { display:none; position:fixed; inset:0; z-index:1000; }
+#dlModal .backdrop { position:absolute; inset:0; background:rgba(0,0,0,0.35); }
+#dlModal .dialog { position:relative; z-index:1; background:#fff; border-radius:8px; padding:1.5rem; max-width:520px; margin:8vh auto; box-shadow:0 4px 24px rgba(0,0,0,0.18); }
+#dlModal h3 { margin:0 0 0.5rem; font-size:1rem; }
+#dlModal .paper-title { font-size:0.88rem; color:var(--text-muted); margin-bottom:1rem; }
+#dlModal label { display:block; font-weight:600; margin-bottom:0.25rem; font-size:0.88rem; }
+#dlModal input[type=text] { width:100%; box-sizing:border-box; padding:0.4rem 0.6rem; border:1px solid var(--border); border-radius:4px; font-family:monospace; font-size:0.85rem; }
+#dlModal .hint { font-size:0.78rem; color:var(--text-muted); margin:0.25rem 0 0.75rem; }
+#dlModal .warning-box { display:none; background:#fff8e1; border:1px solid #f9a825; border-radius:4px; padding:0.6rem 0.75rem; font-size:0.85rem; margin-bottom:0.75rem; color:#5d4037; }
+#dlModal .actions { display:flex; gap:0.5rem; justify-content:flex-end; margin-top:0.75rem; }
+#dlModal .msg-success { color:var(--success,green); font-size:0.88rem; margin-top:0.5rem; }
+#dlModal .msg-error   { color:var(--danger,red);  font-size:0.88rem; margin-top:0.5rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1>Discovery Scout</h1>
+<p style="color:var(--text-muted); margin-bottom:1rem;">Search arXiv for papers and register them directly into your library.</p>
+
+<form class="discover-search" method="get" action="{{ url_for('discover') }}">
+    <input type="text" name="q" value="{{ query | e }}" placeholder="e.g. transformer attention mechanism" autofocus>
+    <button class="btn btn-primary" type="submit">Search arXiv</button>
+</form>
+
+{% if error %}
+<div class="flash error">arXiv search error: {{ error | e }}</div>
+{% endif %}
+
+{% if query and not results and not error %}
+<p style="color:var(--text-muted);">No results found for <strong>{{ query | e }}</strong>.</p>
+{% endif %}
+
+{% if results %}
+<p style="color:var(--text-muted); margin-bottom:0.75rem;">{{ results|length }} result(s) for <strong>{{ query | e }}</strong></p>
+<div style="overflow-x:auto;">
+<table class="results-table">
+    <thead>
+        <tr>
+            <th>Title</th>
+            <th>Authors</th>
+            <th>Year</th>
+            <th>Abstract</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for paper in results %}
+    <tr>
+        <td>
+            <div>{{ paper.title | e }}</div>
+            <div class="arxiv-id">arXiv:{{ paper.arxiv_id | e }}</div>
+        </td>
+        <td style="white-space:nowrap; max-width:180px; overflow:hidden; text-overflow:ellipsis;">{{ paper.authors | e }}</td>
+        <td>{{ paper.year | e }}</td>
+        <td class="abstract-cell">{{ paper.abstract[:200] | e }}{% if paper.abstract|length > 200 %}…{% endif %}</td>
+        <td style="white-space:nowrap;">
+            {% if paper.pdf_url %}
+            <button class="btn btn-primary btn-sm dl-trigger"
+                    data-pdf="{{ paper.pdf_url | e }}"
+                    data-title="{{ paper.title | e }}">
+                Download &amp; Register
+            </button>
+            {% else %}
+            <span style="color:var(--text-muted); font-size:0.8rem;">No PDF link</span>
+            {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+
+<!-- Download modal -->
+<div id="dlModal">
+    <div class="backdrop" onclick="closeDlModal()"></div>
+    <div class="dialog">
+        <h3>Download &amp; Register Paper</h3>
+        <div class="paper-title" id="dlPaperTitle"></div>
+        <input type="hidden" id="dlPdfUrl">
+
+        <label for="dlDestDir">Save to directory</label>
+        <div style="display:flex; gap:0.4rem;">
+            <input type="text" id="dlDestDir" value="{{ first_scan_dir | e }}" style="flex:1; padding:0.4rem 0.6rem; border:1px solid var(--border,#d0d7de); border-radius:4px; font-family:monospace; font-size:0.85rem;">
+            <button type="button" class="btn" onclick="openBrowseModal('dlDestDir')" style="white-space:nowrap; font-size:0.82rem;">Browse…</button>
+        </div>
+        <div class="hint">
+            Scan directories:
+            {% if scan_dirs %}
+                {% for sd in scan_dirs %}<code>{{ sd | e }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+            {% else %}
+                <em>none configured</em>
+            {% endif %}
+        </div>
+
+        <div class="warning-box" id="dlWarning"></div>
+        <div class="msg-success" id="dlSuccess" style="display:none;"></div>
+        <div class="msg-error"   id="dlError"   style="display:none;"></div>
+
+        <div class="actions">
+            <button class="btn" onclick="closeDlModal()">Cancel</button>
+            <button class="btn btn-primary" id="dlBtn" onclick="doDownload(false)">Download</button>
+        </div>
+    </div>
+</div>
+
+<script>
+let _dlConfirmMode = false;
+
+function openDlModal(pdfUrl, title) {
+    document.getElementById('dlPdfUrl').value = pdfUrl;
+    document.getElementById('dlPaperTitle').textContent = title;
+    document.getElementById('dlWarning').style.display = 'none';
+    document.getElementById('dlSuccess').style.display = 'none';
+    document.getElementById('dlError').style.display = 'none';
+    var btn = document.getElementById('dlBtn');
+    btn.textContent = 'Download';
+    btn.disabled = false;
+    btn.onclick = function() { doDownload(false); };
+    _dlConfirmMode = false;
+    document.getElementById('dlModal').style.display = 'block';
+}
+
+/* Wire up table buttons after DOM is ready */
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.dl-trigger').forEach(function(el) {
+        el.addEventListener('click', function() {
+            openDlModal(el.getAttribute('data-pdf'), el.getAttribute('data-title'));
+        });
+    });
+});
+
+function closeDlModal() {
+    document.getElementById('dlModal').style.display = 'none';
+}
+
+function doDownload(confirmed) {
+    const pdfUrl  = document.getElementById('dlPdfUrl').value;
+    const destDir = document.getElementById('dlDestDir').value.trim();
+    const btn     = document.getElementById('dlBtn');
+    const warn    = document.getElementById('dlWarning');
+    const errEl   = document.getElementById('dlError');
+    const okEl    = document.getElementById('dlSuccess');
+
+    btn.disabled = true;
+    errEl.style.display = 'none';
+    okEl.style.display  = 'none';
+
+    const body = new FormData();
+    body.append('pdf_url',   pdfUrl);
+    body.append('dest_dir',  destDir);
+    body.append('confirmed', confirmed ? 'true' : 'false');
+
+    fetch('{{ url_for("discover_download") }}', { method: 'POST', body })
+        .then(r => r.json())
+        .then(data => {
+            btn.disabled = false;
+            if (data.ok) {
+                warn.style.display = 'none';
+                const msg = data.outside_scan_dir
+                    ? (data.message || 'File saved (outside scan directories).')
+                    : `Saved as "${data.filename}" — ${data.new_count} new entry/entries indexed.`;
+                okEl.textContent = msg;
+                okEl.style.display = 'block';
+                btn.textContent = 'Done';
+                btn.onclick = closeDlModal;
+            } else if (data.outside_scan_dir) {
+                warn.textContent = data.warning;
+                warn.style.display = 'block';
+                btn.textContent = 'Proceed Anyway';
+                btn.onclick = () => doDownload(true);
+            } else {
+                errEl.textContent = data.error || 'Download failed.';
+                errEl.style.display = 'block';
+                btn.textContent = 'Download';
+            }
+        })
+        .catch(err => {
+            btn.disabled = false;
+            errEl.textContent = 'Network error: ' + err;
+            errEl.style.display = 'block';
+        });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Workspace — ScribeFTS{% endblock %}
+{% block content %}
+<h1>Workspace</h1>
+
+{% if current_data_dir %}
+<div class="card" style="margin-bottom:1.5rem;">
+    <h2>Current Workspace</h2>
+    <table class="config-table">
+        <tbody>
+            <tr>
+                <th>Directory</th>
+                <td><code>{{ current_data_dir }}</code></td>
+            </tr>
+            <tr>
+                <th>Settings file</th>
+                <td><code>{{ current_data_dir }}/meta_config.json</code></td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="flash info" style="margin-bottom:1.5rem;">
+    No workspace is configured. Choose an option below to get started.
+</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:1.5rem;">
+    <h2>Open Existing Settings File</h2>
+    <p style="margin-bottom:0.75rem; color:var(--text-muted);">
+        Point to an existing <code>meta_config.json</code> to load that workspace.
+    </p>
+    <form method="post" action="{{ url_for('workspace_open') }}">
+        <div class="form-group">
+            <label for="settings_path">Path to <code>meta_config.json</code></label>
+            <input type="text" id="settings_path" name="settings_path"
+                   placeholder="e.g. C:/Users/me/docs/data/meta_config.json"
+                   style="width:100%; font-family:monospace;">
+        </div>
+        <button class="btn btn-primary" type="submit">Open</button>
+    </form>
+</div>
+
+<div class="card" style="margin-bottom:1.5rem;">
+    <h2>Create New Workspace</h2>
+    <p style="margin-bottom:0.75rem; color:var(--text-muted);">
+        Enter a directory path. ScribeFTS will create <code>meta_config.json</code>,
+        <code>library.db</code>, and <code>fts.db</code> there on first scan.
+    </p>
+    <form method="post" action="{{ url_for('workspace_create') }}">
+        <div class="form-group">
+            <label for="new_dir">Directory</label>
+            <input type="text" id="new_dir" name="new_dir"
+                   placeholder="e.g. C:/Users/me/my-library"
+                   style="width:100%; font-family:monospace;">
+        </div>
+        <button class="btn btn-success" type="submit">Create</button>
+    </form>
+</div>
+
+{% if current_data_dir %}
+<div class="card">
+    <h2>Move Workspace to New Location</h2>
+    <p style="margin-bottom:0.75rem; color:var(--text-muted);">
+        Copies <code>meta_config.json</code>, <code>library.db</code>, <code>fts.db</code>,
+        and <code>ai_config.json</code> to the destination, then removes the originals.
+    </p>
+    <form method="post" action="{{ url_for('workspace_move') }}"
+          onsubmit="return confirm('Move all workspace files to the new directory?');">
+        <div class="form-group">
+            <label for="move_dir">Destination directory</label>
+            <input type="text" id="move_dir" name="move_dir"
+                   placeholder="e.g. D:/new-location/library"
+                   style="width:100%; font-family:monospace;">
+        </div>
+        <button class="btn btn-danger" type="submit">Move</button>
+    </form>
+</div>
+{% endif %}
+{% endblock %}

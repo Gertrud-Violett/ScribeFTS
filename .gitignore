@@ -1,0 +1,30 @@
+# --- Runtime data (potentially personal: scan paths, API keys, database content) ---
+data/
+
+# --- Python bytecode ---
+__pycache__/
+*.py[cod]
+*.pyo
+
+# --- Virtual environment ---
+.venv/
+venv/
+env/
+
+# --- Build / dist ---
+*.egg-info/
+dist/
+build/
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# --- Test / coverage artefacts ---
+.pytest_cache/
+.coverage
+htmlcov/

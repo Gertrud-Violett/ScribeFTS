@@ -16,6 +16,70 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from lib.api import ScribeFTS
+from lib import settings_locator
+
+
+_DEFAULT_DATA_DIR = str(_project_root / "data")
+
+
+def _resolve_data_dir(settings_path: str | None) -> str:
+    """Resolve the workspace data directory for CLI startup.
+
+    Priority: explicit --settings arg > last-used prefs > interactive prompt.
+    Returns the data_dir string (parent of meta_config.json).
+    """
+    if settings_path is not None:
+        p = Path(settings_path).resolve()
+        if p.suffix.lower() == ".json":
+            data_dir = p.parent
+            settings_locator.save_last_settings_path(p)
+        else:
+            # Treat as a data directory directly
+            data_dir = p
+            settings_locator.save_last_settings_path(p / "meta_config.json")
+        print(f"  Using settings: {data_dir / 'meta_config.json'}")
+        return str(data_dir)
+
+    last = settings_locator.load_last_settings_path()
+    if last:
+        print(f"  Using settings: {last}")
+        return str(last.parent)
+
+    return _prompt_first_run()
+
+
+def _prompt_first_run() -> str:
+    """Interactively ask the user where to put or find the workspace on first run."""
+    print("\n  No settings file found. How would you like to start?")
+    print("  1. Open an existing settings file (meta_config.json)")
+    print("  2. Create a new workspace in a directory")
+    print("  [Enter] Use the default location (./data/)")
+
+    choice = input("\n  Select [1/2 or Enter]: ").strip()
+
+    if choice == "1":
+        while True:
+            path_str = input("  Path to meta_config.json: ").strip()
+            if not path_str:
+                break
+            p = Path(path_str).resolve()
+            if p.is_file():
+                settings_locator.save_last_settings_path(p)
+                print(f"  Workspace: {p.parent}")
+                return str(p.parent)
+            print(f"  File not found: {p}")
+
+    elif choice == "2":
+        dir_str = input("  Directory for new workspace: ").strip()
+        if dir_str:
+            d = Path(dir_str).resolve()
+            d.mkdir(parents=True, exist_ok=True)
+            settings_locator.save_last_settings_path(d / "meta_config.json")
+            print(f"  New workspace: {d}")
+            return str(d)
+
+    print(f"  Using default: {_DEFAULT_DATA_DIR}")
+    return _DEFAULT_DATA_DIR
 
 
 class ScribeFTSCLI(cmd.Cmd):
@@ -344,6 +408,68 @@ class ScribeFTSCLI(cmd.Cmd):
         else:
             print("  No pending drafts to commit.")
 
+    def do_location(self, _arg):
+        """Manage the workspace location. Usage: location"""
+        print(f"  Current workspace : {self.lib.data_dir}")
+        print(f"  Settings file     : {self.lib.config_path}")
+        print()
+        print("  1. Open different settings file")
+        print("  2. Create new workspace in a directory")
+        print("  3. Move workspace to a new directory")
+        choice = input("  Select [1-3] or Enter to cancel: ").strip()
+        if choice == "1":
+            self._location_open()
+        elif choice == "2":
+            self._location_create()
+        elif choice == "3":
+            self._location_move()
+        else:
+            print("  Cancelled.")
+
+    def _location_open(self) -> None:
+        path_str = input("  Path to meta_config.json: ").strip()
+        if not path_str:
+            print("  Cancelled.")
+            return
+        p = Path(path_str).resolve()
+        if not p.is_file():
+            print(f"  File not found: {p}")
+            return
+        self.lib.close()
+        settings_locator.save_last_settings_path(p)
+        self.lib = ScribeFTS(data_dir=str(p.parent))
+        print(f"  Workspace opened: {p.parent}")
+
+    def _location_create(self) -> None:
+        dir_str = input("  Directory for new workspace: ").strip()
+        if not dir_str:
+            print("  Cancelled.")
+            return
+        d = Path(dir_str).resolve()
+        d.mkdir(parents=True, exist_ok=True)
+        self.lib.close()
+        settings_locator.save_last_settings_path(d / "meta_config.json")
+        self.lib = ScribeFTS(data_dir=str(d))
+        print(f"  New workspace created: {d}")
+
+    def _location_move(self) -> None:
+        dir_str = input("  Destination directory: ").strip()
+        if not dir_str:
+            print("  Cancelled.")
+            return
+        new_dir = Path(dir_str).resolve()
+        old_dir = self.lib.data_dir
+        self.lib.close()
+        try:
+            settings_locator.move_workspace(old_dir, new_dir)
+        except OSError as e:
+            print(f"  Move failed: {e}")
+            self.lib = ScribeFTS(data_dir=str(old_dir))
+            return
+        settings_locator.save_last_settings_path(new_dir / "meta_config.json")
+        self.lib = ScribeFTS(data_dir=str(new_dir))
+        print(f"  Workspace moved to: {new_dir}")
+
     def do_quit(self, _arg):
         """Exit ScribeFTS."""
         print("  Goodbye.")
@@ -354,8 +480,8 @@ class ScribeFTSCLI(cmd.Cmd):
     do_EOF = do_quit
 
 
-def main():
-    data_dir = str(Path(__file__).resolve().parent.parent / "data")
+def main(settings_path: str | None = None):
+    data_dir = _resolve_data_dir(settings_path)
     librarian = ScribeFTS(data_dir=data_dir)
 
     # Auto-refresh on first run

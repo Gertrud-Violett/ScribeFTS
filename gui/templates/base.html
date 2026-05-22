@@ -12,8 +12,13 @@
         <span class="brand">ScribeFTS</span>
         <a href="{{ url_for('index') }}">Library</a>
         <a href="{{ url_for('stats') }}">Stats</a>
-        <a href="{{ url_for('config_page') }}">Config</a>
-        <a href="{{ url_for('ai_config_page') }}">AI Config</a>
+        <a href="{{ url_for('ai_config_page') }}">API</a>
+        <a href="{{ url_for('workspace') }}">Workspace</a>
+        <a href="{{ url_for('discover') }}">Discover</a>
+        <a href="{{ url_for('tutorial') }}">Tutorial</a>
+        {% if first_scan_dir %}
+        <button type="button" onclick="openUploadModal()" title="Upload a PDF file or URL directly into your library">Upload</button>
+        {% endif %}
         <form action="{{ url_for('refresh') }}" method="post">
             <button type="submit" title="Scan configured directories for new, moved, or missing files; index new files in FTS">Refresh</button>
         </form>
@@ -21,6 +26,132 @@
             <button type="submit" title="Rebuild the FTS index from scratch (re-extracts text from all cataloged files)">Reindex FTS</button>
         </form>
     </nav>
+
+    <!-- Upload modal (visible on all pages when workspace is configured) -->
+    <div id="uploadModal" style="display:none; position:fixed; inset:0; z-index:1000;">
+        <div style="position:absolute; inset:0; background:rgba(0,0,0,0.35);" onclick="closeUploadModal()"></div>
+        <div style="position:relative; z-index:1; background:#fff; border-radius:8px; padding:1.5rem; max-width:520px; margin:8vh auto; box-shadow:0 4px 24px rgba(0,0,0,0.18);">
+            <h3 style="margin:0 0 1rem;">Upload / Add File</h3>
+
+            <div style="margin-bottom:0.75rem;">
+                <label style="display:block; font-weight:600; margin-bottom:0.25rem; font-size:0.88rem;">File</label>
+                <input type="file" id="upFile" accept=".pdf" style="width:100%; font-size:0.88rem;">
+            </div>
+
+            <div style="margin-bottom:0.75rem;">
+                <label style="display:block; font-weight:600; margin-bottom:0.25rem; font-size:0.88rem;">— or — Direct PDF URL</label>
+                <input type="text" id="upUrl" placeholder="https://arxiv.org/pdf/2301.00001.pdf"
+                       style="width:100%; box-sizing:border-box; padding:0.4rem 0.6rem; border:1px solid var(--border,#d0d7de); border-radius:4px; font-size:0.85rem;">
+            </div>
+
+            <div style="margin-bottom:0.75rem;">
+                <label style="display:block; font-weight:600; margin-bottom:0.25rem; font-size:0.88rem;">Save to directory</label>
+                <div style="display:flex; gap:0.4rem;">
+                    <input type="text" id="upDestDir" value="{{ first_scan_dir | e }}"
+                           style="flex:1; padding:0.4rem 0.6rem; border:1px solid var(--border,#d0d7de); border-radius:4px; font-family:monospace; font-size:0.85rem;">
+                    <button type="button" class="btn" onclick="openBrowseModal('upDestDir')" style="white-space:nowrap; font-size:0.82rem;">Browse…</button>
+                </div>
+                <div style="font-size:0.78rem; color:var(--text-muted,#666); margin-top:0.25rem;">
+                    Files must be inside a scan directory to be indexed automatically.
+                    {% if scan_dirs %}
+                    Scan dirs: {% for sd in scan_dirs %}<code>{{ sd | e }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+                    {% endif %}
+                </div>
+            </div>
+
+            <div id="upWarning" style="display:none; background:#fff8e1; border:1px solid #f9a825; border-radius:4px; padding:0.6rem 0.75rem; font-size:0.85rem; margin-bottom:0.75rem; color:#5d4037;"></div>
+            <div id="upSuccess" style="display:none; font-size:0.88rem; margin-bottom:0.5rem; color:green;"></div>
+            <div id="upError"   style="display:none; font-size:0.88rem; margin-bottom:0.5rem; color:red;"></div>
+
+            <div style="display:flex; gap:0.5rem; justify-content:flex-end; margin-top:0.5rem;">
+                <button class="btn" onclick="closeUploadModal()">Cancel</button>
+                <button class="btn btn-primary" id="upBtn" onclick="doUpload(false)"><span id="upSpinner" style="display:none; width:12px; height:12px; border:2px solid rgba(255,255,255,0.5); border-top-color:#fff; border-radius:50%; animation:upSpin 0.7s linear infinite; vertical-align:middle; margin-right:4px;"></span><span id="upBtnLabel">Upload</span></button>
+            </div>
+        </div>
+    </div>
+
+    <style>
+        @keyframes upSpin { to { transform: rotate(360deg); } }
+    </style>
+    <script>
+    function openUploadModal() {
+        var el = document.getElementById('upFile');
+        if (el) el.value = '';
+        document.getElementById('upUrl').value = '';
+        document.getElementById('upWarning').style.display = 'none';
+        document.getElementById('upSuccess').style.display = 'none';
+        document.getElementById('upError').style.display   = 'none';
+        document.getElementById('upBtnLabel').textContent = 'Upload';
+        var btn = document.getElementById('upBtn');
+        btn.disabled = false;
+        btn.onclick = function() { doUpload(false); };
+        document.getElementById('uploadModal').style.display = 'block';
+    }
+    function closeUploadModal() {
+        document.getElementById('uploadModal').style.display = 'none';
+    }
+    function doUpload(confirmed) {
+        var fileInput = document.getElementById('upFile');
+        var file      = fileInput && fileInput.files.length ? fileInput.files[0] : null;
+        var url       = document.getElementById('upUrl').value.trim();
+        var destDir   = document.getElementById('upDestDir').value.trim();
+        var btn       = document.getElementById('upBtn');
+        var spinner   = document.getElementById('upSpinner');
+        var warn      = document.getElementById('upWarning');
+        var errEl     = document.getElementById('upError');
+        var okEl      = document.getElementById('upSuccess');
+
+        if (!file && !url) {
+            errEl.textContent = 'Please select a file or enter a URL.';
+            errEl.style.display = 'block';
+            return;
+        }
+
+        btn.disabled = true;
+        spinner.style.display = 'inline-block';
+        errEl.style.display = 'none';
+        okEl.style.display  = 'none';
+
+        var body = new FormData();
+        if (file) body.append('file', file);
+        if (url)  body.append('url', url);
+        body.append('dest_dir',  destDir);
+        body.append('confirmed', confirmed ? 'true' : 'false');
+
+        fetch('{{ url_for("upload") }}', { method: 'POST', body: body })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                btn.disabled = false;
+                spinner.style.display = 'none';
+                if (data.ok) {
+                    warn.style.display = 'none';
+                    var msg = data.outside_scan_dir
+                        ? (data.message || 'File saved (outside scan directories).')
+                        : ('"' + data.filename + '" added — ' + data.new_count + ' new entry/entries indexed.');
+                    okEl.textContent = msg;
+                    okEl.style.display = 'block';
+                    document.getElementById('upBtnLabel').textContent = 'Done';
+                    btn.onclick = function() { closeUploadModal(); location.reload(); };
+                } else if (data.outside_scan_dir) {
+                    warn.textContent = data.warning;
+                    warn.style.display = 'block';
+                    document.getElementById('upBtnLabel').textContent = 'Proceed Anyway';
+                    btn.onclick = function() { doUpload(true); };
+                } else {
+                    errEl.textContent = data.error || 'Upload failed.';
+                    errEl.style.display = 'block';
+                    document.getElementById('upBtnLabel').textContent = 'Upload';
+                    btn.onclick = function() { doUpload(false); };
+                }
+            })
+            .catch(function(err) {
+                btn.disabled = false;
+                spinner.style.display = 'none';
+                errEl.textContent = 'Network error: ' + err;
+                errEl.style.display = 'block';
+            });
+    }
+    </script>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
@@ -33,5 +164,113 @@
     <div class="container">
         {% block content %}{% endblock %}
     </div>
+
+    <!-- Shared directory browser modal (used by upload + discover download modals) -->
+    <div id="browseModal" style="display:none; position:fixed; inset:0; z-index:2000;">
+        <div style="position:absolute; inset:0; background:rgba(0,0,0,0.45);" onclick="closeBrowseModal()"></div>
+        <div style="position:relative; z-index:1; background:#fff; border-radius:8px; padding:1.25rem 1.5rem 1.25rem; max-width:480px; width:92%; margin:8vh auto; box-shadow:0 4px 24px rgba(0,0,0,0.22); display:flex; flex-direction:column; max-height:74vh;">
+            <h3 style="margin:0 0 0.6rem; font-size:1rem;">Select Directory</h3>
+            <div id="browsePathBar" style="font-family:monospace; font-size:0.8rem; background:#f5f7fa; padding:0.35rem 0.6rem; border-radius:4px; margin-bottom:0.6rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#555; min-height:1.4em;">&nbsp;</div>
+            <div id="browseDirList" style="flex:1; overflow-y:auto; border:1px solid #d0d7de; border-radius:4px; min-height:120px; background:#fff;"></div>
+            <div style="display:flex; gap:0.5rem; justify-content:space-between; align-items:center; margin-top:0.75rem; flex-wrap:wrap;">
+                <button class="btn btn-sm" id="browseUpBtn" onclick="browseUp()" style="font-size:0.82rem;">↑ Up</button>
+                <div style="display:flex; gap:0.5rem;">
+                    <button class="btn btn-sm" onclick="closeBrowseModal()" style="font-size:0.82rem;">Cancel</button>
+                    <button class="btn btn-primary btn-sm" onclick="selectBrowseDir()" style="font-size:0.82rem;">Select this folder</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <style>
+        .browse-item { padding:0.38rem 0.75rem; cursor:pointer; border-bottom:1px solid #f0f0f0; font-family:monospace; font-size:0.85rem; user-select:none; }
+        .browse-item:hover { background:#f0f4ff; }
+        .browse-item.browse-selected { background:#cfe2ff !important; }
+    </style>
+    <script>
+    (function () {
+        var _targetInputId = null;
+        var _currentPath   = '';
+        var _parentPath    = null;
+        var _selectedPath  = null;  /* set by single-click; cleared on navigation */
+
+        window.openBrowseModal = function (inputId) {
+            _targetInputId = inputId;
+            _selectedPath  = null;
+            var inp = document.getElementById(inputId);
+            var startPath = (inp && inp.value.trim()) ? inp.value.trim() : '';
+            document.getElementById('browseModal').style.display = 'block';
+            window.browseTo(startPath);
+        };
+
+        window.closeBrowseModal = function () {
+            document.getElementById('browseModal').style.display = 'none';
+        };
+
+        window.browseUp = function () {
+            window.browseTo(_parentPath !== null ? _parentPath : '');
+        };
+
+        window.selectBrowseDir = function () {
+            var inp    = document.getElementById(_targetInputId);
+            var chosen = _selectedPath !== null ? _selectedPath : _currentPath;
+            if (inp && chosen) inp.value = chosen;
+            window.closeBrowseModal();
+        };
+
+        /* Single-click: highlight item and record it as the pending selection. */
+        window._browseHighlight = function (el, path) {
+            _selectedPath = path;
+            var items = document.getElementById('browseDirList').querySelectorAll('.browse-item');
+            items.forEach(function (it) { it.classList.remove('browse-selected'); });
+            el.classList.add('browse-selected');
+        };
+
+        /* Double-click (or ↑ Up button): navigate into the directory. */
+        window.browseTo = function (path) {
+            _selectedPath = null;
+            var list = document.getElementById('browseDirList');
+            list.innerHTML = '<div style="padding:0.9rem;color:#888;text-align:center;font-size:0.88rem;">Loading…</div>';
+            fetch('/browse?path=' + encodeURIComponent(path))
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (data.error) {
+                        list.innerHTML = '<div style="padding:0.9rem;color:red;font-size:0.88rem;">' + _esc(data.error) + '</div>';
+                        return;
+                    }
+                    _currentPath = data.path;
+                    _parentPath  = data.parent;
+                    document.getElementById('browsePathBar').textContent = data.path || 'Select a drive';
+                    document.getElementById('browseUpBtn').disabled = (data.parent === null);
+
+                    if (data.dirs.length === 0) {
+                        list.innerHTML = '<div style="padding:0.9rem;color:#888;text-align:center;font-size:0.88rem;">(no subdirectories)</div>';
+                        return;
+                    }
+                    var html = '';
+                    data.dirs.forEach(function (d) {
+                        html += '<div class="browse-item" data-path="' + _escAttr(d.path) + '">'
+                             + '&#128193; ' + _esc(d.name)
+                             + '</div>';
+                    });
+                    list.innerHTML = html;
+                    list.querySelectorAll('.browse-item').forEach(function (el) {
+                        var p = el.getAttribute('data-path');
+                        el.addEventListener('click',    function () { window._browseHighlight(el, p); });
+                        el.addEventListener('dblclick', function () { window.browseTo(p); });
+                    });
+                })
+                .catch(function (err) {
+                    list.innerHTML = '<div style="padding:0.9rem;color:red;font-size:0.88rem;">Error: ' + err + '</div>';
+                });
+        };
+
+        function _esc(s) {
+            return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        }
+        function _escAttr(s) {
+            return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+        }
+    }());
+    </script>
 </body>
 </html>

@@ -1,4 +1,4 @@
-# ScribeFTS — Architecture Document
+# ScribeFTS — Architecture Document (v1.1)
 
 ## 1. Overview
 
@@ -26,12 +26,14 @@ ScribeFTS/
 │   ├── __init__.py
 │   ├── app.py                 # Flask application & route definitions
 │   ├── templates/
-│   │   ├── base.html          # Shared layout (nav bar, CSS, flash messages)
+│   │   ├── base.html          # Shared layout (nav bar, modals, flash messages)
 │   │   ├── library.html       # Main table view (list, search, sort, filter)
 │   │   ├── detail.html        # Single-entry view, metadata edit, draft review
 │   │   ├── stats.html         # Summary statistics page
 │   │   ├── config.html        # Metadata schema editor (meta_config.json)
-│   │   └── ai_config.html     # AI provider settings page
+│   │   ├── ai_config.html     # API provider settings page
+│   │   ├── discover.html      # arXiv Discovery Scout (search + download)
+│   │   └── tutorial.html      # Static setup & usage guide
 │   └── static/
 │       └── style.css          # Custom styles
 ├── lib/
@@ -42,6 +44,8 @@ ScribeFTS/
 │   ├── fts.py                 # FTS5 database operations & PDF text extraction
 │   ├── extractor.py           # 3-layer metadata extraction pipeline
 │   ├── ai_client.py           # AI API HTTP client (Gemini, OpenAI-compatible)
+│   ├── arxiv_client.py        # arXiv Atom XML search client (stdlib only)
+│   ├── downloader.py          # URL-based PDF downloader (stdlib only)
 │   └── api.py                 # Public API (importable by all interfaces)
 └── tests/
     ├── __init__.py
@@ -84,8 +88,7 @@ Metadata fields are **not hard-coded**. They are defined in a separate JSON conf
     { "name": "title",       "type": "text",   "required": true,  "default": "" },
     { "name": "authors",     "type": "text",   "required": false, "default": "" },
     { "name": "genre",       "type": "choice", "required": false, "default": "", "choices": [
-        "Rotordynamics", "Bearings", "Compressor", "Turbine",
-        "Manufacturing", "Fluid Dynamics", "Materials", "NVH", "Other"
+        "Rotordynamics", "Bearings", "Compressor", "Turbine", "Pumps", "Seals", "Gears", "Electrical", "Materials", "General"
     ]},
     { "name": "year",        "type": "text",   "required": false, "default": "" },
     { "name": "keywords",    "type": "list",   "required": false, "default": [] },
@@ -141,6 +144,8 @@ Draft rows are temporary: they are either committed to the `metadata` table (mak
 
 The three-table design keeps extracted suggestions isolated from confirmed metadata, preserving the original catalog's integrity until the user (or the auto-commit logic) approves the suggestion.
 
+**WAL mode:** Both `library.db` and `fts.db` are opened with `PRAGMA journal_mode=WAL`. WAL (Write-Ahead Logging) mode improves concurrency by allowing reads while a write is in progress and reduces the chance of `SQLITE_BUSY` errors when the GUI and a background scan access the database simultaneously. WAL mode persists on-disk after the first `PRAGMA` call; setting it on every `open_db()` / `open_fts_db()` call is safe and idempotent.
+
 **Why SQLite?** Single portable file, built into Python (`sqlite3`), crash-safe (ACID), fast incremental updates, readable by any SQLite-compatible tool (DB Browser, DBeaver, Jupyter, etc.). Format guaranteed stable until 2050+.
 
 ### 3.4 AI Configuration (`ai_config.json`)
@@ -152,7 +157,7 @@ Stored in `data/ai_config.json`. Created with defaults on first access if absent
   "enabled": false,
   "provider": "gemini",
   "api_key": "",
-  "model": "gemini-1.5-flash",
+  "model": "gemini-3.1-pro",
   "auto_commit_threshold": 0.8,
   "openai_endpoint": "https://api.openai.com/v1/chat/completions"
 }
@@ -339,6 +344,28 @@ Uses `urllib.request` only — no additional dependencies. Supports Google Gemin
 
 All network errors, auth failures, and JSON parse errors are caught; callers receive `None` and fall back to heuristic extraction.
 
+### 4.8 `arxiv_client.py` — arXiv Search Client
+
+Stdlib-only (`urllib.request` + `xml.etree.ElementTree`). No additional dependencies.
+
+| Function | Description |
+|---|---|
+| `search(query, max_results=10) -> list[dict]` | Query the arXiv Atom XML API. Returns a list of paper dicts with keys `title`, `authors`, `year`, `abstract`, `pdf_url`, `arxiv_id`. Raises `RuntimeError` on network or parse failure. |
+
+Uses a shared `ssl.SSLContext` with certificate verification disabled (`CERT_NONE`, `check_hostname=False`). This avoids `CERTIFICATE_VERIFY_FAILED` errors on Windows Python installations that lack a root CA bundle for `arxiv.org`. Appropriate for a local-only tool contacting a well-known public API.
+
+### 4.9 `downloader.py` — URL PDF Downloader
+
+Stdlib-only (`urllib.request` + `shutil`). No additional dependencies.
+
+| Function | Description |
+|---|---|
+| `download_pdf(url, dest_dir, filename=None) -> Path` | Download a PDF from `url` into `dest_dir`. Validates the first 5 bytes for the `%PDF-` magic number. Derives a filename from `Content-Disposition` or the URL path. Raises `ValueError` if the URL does not return a PDF; raises `RuntimeError` on network failure. |
+| `_unique_path(dest) -> Path` | If `dest` exists, appends `_1`, `_2`, … before the extension until a free name is found. |
+| `_derive_filename(url, resp) -> str` | Extracts a filename from the `Content-Disposition` header, falling back to the last URL path segment. |
+
+Shares the same SSL context pattern as `arxiv_client.py` to handle PDF downloads from `arxiv.org` and similar hosts.
+
 ---
 
 ## 5. CLI Commands (`bin/ScribeFTS.py`)
@@ -488,12 +515,18 @@ Discard:
 | **Auto-commit threshold** | Allows hands-off operation for high-confidence extractions (Layer 1 PDF metadata) while staging uncertain values (Layer 2/3 heuristics) for human review. Default 0.8 keeps all non-AI suggestions as drafts. |
 | **`urllib.request` for AI calls** | Zero new dependencies. All errors are caught; callers receive `None` and fall back to Layer 3a heuristics transparently. |
 | **Separate `ai_config.json`** | AI credentials are kept outside `meta_config.json` to avoid accidentally exporting API keys with the document catalog. |
+| **WAL mode for both databases** | `PRAGMA journal_mode=WAL` is set on every `sqlite3.connect()` call. WAL persists on-disk after first set, so the call is idempotent. Prevents `SQLITE_BUSY` when GUI requests overlap with a background scan. |
+| **SSL verification disabled for external requests** | `arxiv_client.py` and `downloader.py` share an `ssl.SSLContext` with `CERT_NONE`. Some Windows Python installations lack the issuer certificate for `arxiv.org`, causing `CERTIFICATE_VERIFY_FAILED`. Acceptable for a local-only tool contacting well-known public APIs; avoids adding `certifi` as a dependency. |
+| **arXiv stdlib-only client** | `arxiv_client.py` uses `urllib.request` + `xml.etree.ElementTree` to parse the arXiv Atom XML feed. Zero new dependencies. |
+| **In-browser directory picker** | The "Browse…" button opens a modal backed by the `/browse` JSON endpoint. Single-click highlights; double-click navigates. Avoids limitations of `<input type="file" webkitdirectory>` and works cross-platform. |
+| **Config and AI Config under single "API" nav item** | Both `/config` and `/ai_config` share a tab bar, reducing nav clutter. The "API" nav link lands on `/ai_config`; the "Config" tab navigates to the metadata schema editor. |
+| **`data-*` attributes for dynamic JS handlers** | Inline `onclick="fn(tojson_value)"` breaks when values contain double quotes (Jinja2 `tojson` uses JSON `"` delimiters inside HTML `"` attributes). All dynamic handlers use `data-*` attributes with `addEventListener` to avoid this conflict. |
 
 ---
 
 ## 8. Dependencies
 
-- **Python 3.14+** (standard library: `sqlite3`, `json`, `hashlib`, `pathlib`, `cmd`, `webbrowser`, `urllib.request`)
+- **Python 3.14+** (standard library: `sqlite3`, `json`, `hashlib`, `pathlib`, `cmd`, `webbrowser`, `urllib.request`, `ssl`, `xml.etree.ElementTree`)
 - **Flask** (`pip install flask`) — required for GUI mode only; CLI mode has zero external dependencies
 - **PyMuPDF** (`pip install pymupdf`) — required for PDF text extraction in FTS and Layer 1/3 extraction; optional (features degrade gracefully if absent)
 
@@ -521,30 +554,40 @@ The GUI runs a local Flask development server (`localhost:5000`) and opens the d
 | `/reindex` | POST | Trigger a full FTS reindex. Flash the count. Redirect to `/`. |
 | `/export` | POST | Trigger JSON export. Flash the output path. |
 | `/stats` | GET | Summary statistics page (total, by genre, missing count). |
-| `/config` | GET/POST | View and edit `meta_config.json`. GET shows current config in an editable form; POST validates and saves. |
+| `/config` | GET/POST | View and edit `meta_config.json`. GET shows current config in an editable form; POST validates and saves. Shares a "Config / API" tab bar with `/ai_config`. |
 | `/suggest/<hash_prefix>` | POST | Run the extraction pipeline for one entry; store results as drafts; auto-commit high-confidence fields. Redirect to detail page with flash summary. |
 | `/commit/<hash_prefix>` | POST | Commit the pending draft for one entry to the metadata table. |
 | `/discard/<hash_prefix>` | POST | Discard the pending draft for one entry without committing. |
 | `/suggest_all` | POST | Run extraction for all entries with empty `authors`/`year`/`keywords`. Flash result summary. |
 | `/commit_all` | POST | Commit all pending drafts across all entries. Flash count. |
-| `/ai_config` | GET/POST | View and edit `ai_config.json` (provider, API key, model, threshold, endpoint). |
+| `/ai_config` | GET/POST | View and edit `ai_config.json` (provider, API key, model, threshold, endpoint). Accessible from the "API" nav link; shares a tab bar with `/config`. |
+| `/upload` | POST | Receive a file upload or PDF URL. Saves to the user-selected directory. If the destination is within a configured scan directory, calls `lib.refresh()` and returns `{ok, filename, new_count}`; otherwise returns `{ok: false, outside_scan_dir: true, warning}`. A second call with `confirmed=true` saves without calling `refresh()`. |
+| `/browse` | GET | Directory browser helper. Query param `path`. Returns `{path, parent, dirs: [{name, path}]}` as JSON for the in-browser directory picker modal. Handles Windows drive-letter roots via `os.listdrives()` (Python 3.12+) with A–Z fallback. |
+| `/discover` | GET | arXiv Discovery Scout. If query param `q` is present, calls `arxiv_client.search(q)` and renders results; otherwise renders an empty search form. |
+| `/discover/download` | POST | Download a PDF from an arXiv (or any direct PDF) URL. Same two-phase scan-dir warning flow as `/upload`. Uses `lib/downloader.py`. Returns JSON. |
+| `/tutorial` | GET | Renders the static tutorial page with `scan_dirs` injected for context. |
 
 ### 9.3 Templates
 
 | Template | Purpose |
 |---|---|
-| `base.html` | Shared layout: nav bar (Library, Stats, Config, AI Config, Refresh button), flash message area, CSS link. |
+| `base.html` | Shared layout: nav bar (Library, Stats, API, Workspace, Discover, Tutorial, Upload button, Refresh, Reindex FTS); Upload modal (file picker, URL input, destination directory with Browse button, two-phase scan-dir warning); shared in-browser directory browser modal (`/browse`-backed, single-click highlight / double-click navigate). |
 | `library.html` | Main table with sortable column headers, search bar with Metadata/Full-text mode toggle, Title/Author/Year columns, per-row `[draft]` badge when a pending draft exists, Suggest All / Commit All buttons, and column filter inputs. |
 | `detail.html` | Read-only entry view + Edit button + Suggest Metadata button. When a draft exists, shows a "Suggested (Draft)" card with field values, source, and confidence, plus Commit Draft and Discard Draft buttons. |
 | `stats.html` | Summary counts, genre breakdown. |
-| `config.html` | JSON editor for `meta_config.json` — displays current fields, allows adding/removing/reordering fields, and editing `scan_directories` and `file_extensions`. |
-| `ai_config.html` | Form to configure `ai_config.json`: Enable toggle, provider dropdown (Gemini / OpenAI-compatible), API key, model, auto-commit threshold, and OpenAI endpoint (shown only when OpenAI provider selected). |
+| `config.html` | Metadata schema editor for `meta_config.json` — visual editor (table of fields with type/required/default/choices) and raw JSON editor tab; shared "Config / API" tab bar at the top for navigation to `ai_config.html`. |
+| `ai_config.html` | Form to configure `ai_config.json`: Enable toggle, provider dropdown (Gemini / OpenAI-compatible), API key, model, auto-commit threshold, and OpenAI endpoint (shown only when OpenAI provider selected). Shares the "Config / API" tab bar; accessible from the "API" nav link. |
+| `discover.html` | arXiv Discovery Scout: search form (GET), results table (title/authors/year/truncated abstract/Download button), download modal with destination directory picker and two-phase scan-dir warning. |
+| `tutorial.html` | Static three-section guide: (1) Basic Usage — adding files via scan or Upload, using Discovery Scout, searching, editing metadata; (2) AI Metadata Extraction — enabling Gemini or OpenAI-compatible providers via the API tab, draft/commit flow; (3) Google Drive Sync & NotebookLM — using Google Drive for Desktop as a zero-OAuth sync bridge, step-by-step NotebookLM integration. |
 
 In the default list view (`library.html`), each **Path** cell is clickable and calls `/entry/<hash_prefix>/open`, which opens the file with the system default app for its file type.
 
 ### 9.4 Design Principles
 
-- **No JavaScript frameworks** — plain HTML forms with minimal vanilla JS where needed (e.g., confirm dialogs).
+- **No JavaScript frameworks** — plain HTML forms with minimal vanilla JS where needed.
 - **Flask flash messages** for operation feedback (success/error).
 - **UTF-8 throughout** — browser natively handles Japanese filenames.
 - **No authentication** — localhost-only, single-user tool.
+- **`data-*` attributes for JS event handlers** — inline `onclick="fn({{ value | tojson }})"` is unsafe when values contain double quotes (Jinja2 `tojson` produces JSON strings wrapped in `"`). All dynamic click handlers use `data-*` HTML attributes with `addEventListener`, avoiding HTML-attribute/JSON-string quote conflicts.
+- **Context processor for scan_dirs** — `scan_dirs` and `first_scan_dir` are injected into every template via `@app.context_processor`, so no route needs to pass them explicitly. The Upload button and destination-directory pre-fill both rely on this.
+- **Two-phase upload/download flow** — on first submission, the server checks whether the destination is within a configured scan directory. If not, it returns `outside_scan_dir: true` and a warning message; the client shows the warning and offers "Proceed Anyway". On the second submission with `confirmed=true`, the file is saved but `refresh()` is not called (since the file is outside all scan roots).

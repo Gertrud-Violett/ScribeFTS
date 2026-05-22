@@ -1,4 +1,4 @@
-# ScribeFTS
+# ScribeFTS v1.1
 
 A lightweight CLI/GUI tool to catalog and organize documents using customizable metadata, with full-text search powered by SQLite FTS5 and automatic metadata extraction from PDFs. Scans directory trees for files (default: PDFs), tracks them by content hash, stores metadata in a local SQLite database, and indexes document content in a separate FTS database.
 
@@ -13,6 +13,9 @@ A lightweight CLI/GUI tool to catalog and organize documents using customizable 
 - **Automatic metadata extraction** — 3-layer pipeline extracts title, authors, year, and keywords from PDFs automatically (PDF metadata → filename heuristics → first-page text analysis)
 - **AI-assisted extraction** — optional Google Gemini or OpenAI-compatible API integration for higher-quality suggestions
 - **Draft/Final staging** — extracted suggestions are stored as drafts for review before being committed to the catalog; high-confidence fields are auto-committed
+- **Upload modal** — add PDFs directly from the browser by selecting a file or pasting a URL; in-browser directory picker (Browse…) lets you choose where to save
+- **arXiv Discovery Scout** — search arXiv from the browser, preview paper abstracts, and download & register PDFs directly into your library in one click
+- **Tutorial page** — built-in setup guide covering file management, AI extraction, and Google Drive + NotebookLM integration
 - **Clickable paths in GUI** — click the Path cell in the list view to open the file with your OS-default app
 - **JSON export** — export the full catalog for use in other tools
 - **Importable API** — use `ScribeFTS` directly from Jupyter notebooks or web frameworks
@@ -68,7 +71,7 @@ New files automatically get their parent folder name set as the `genre` field. I
 
 ### 3. Configure AI-assisted extraction (optional)
 
-To use AI for richer metadata extraction, edit `data/ai_config.json` or use the **AI Config** page in the GUI:
+To use AI for richer metadata extraction, edit `data/ai_config.json` or open the **API** tab in the GUI (nav bar → **API** → **API** sub-tab):
 
 ```json
 {
@@ -141,7 +144,7 @@ Edit `data/meta_config.json` to customise:
 - **`file_extensions`** — file types to include (e.g. `[".pdf"]`, or `[".*"]` for all)
 - **`fields`** — metadata fields with types (`text`, `choice`, `list`), defaults, and validation
 
-Edit `data/ai_config.json` (or use **AI Config** in the GUI) to configure AI-assisted extraction.
+Edit `data/ai_config.json` (or use the **API** tab in the GUI) to configure AI-assisted extraction.
 
 ## Project Structure
 
@@ -160,10 +163,12 @@ ScribeFTS/
 │   ├── fts.py                 # FTS5 index operations & PDF text extraction
 │   ├── extractor.py           # 3-layer metadata extraction pipeline
 │   ├── ai_client.py           # AI API HTTP client (Gemini, OpenAI-compatible)
+│   ├── arxiv_client.py        # arXiv Atom XML search client (stdlib only)
+│   ├── downloader.py          # URL-based PDF downloader (stdlib only)
 │   └── api.py                 # Public API facade (ScribeFTS class)
 ├── gui/
 │   ├── app.py                 # Flask routes
-│   └── templates/             # HTML templates (library, detail, ai_config, ...)
+│   └── templates/             # HTML templates (library, detail, discover, tutorial, ...)
 ├── tests/                     # Unit tests & sample documents
 └── docs/ARCHITECTURE.md       # Detailed architecture document
 ```
@@ -189,7 +194,7 @@ It is provided for international users and does contain duplicate information.
 You do not need to process this section if you have already indexed the English version.
 -->
 
-# ScribeFTS (日本語版)
+# ScribeFTS v1.1 (日本語版)
 
 ScribeFTSは、カスタマイズ可能なメタデータを使用してドキュメントをカタログ化・整理するための軽量なCLI/GUIツールです。SQLite FTS5による全文検索と、PDFからの自動メタデータ抽出機能を備えています。ディレクトリツリーをスキャンしてファイル（デフォルトはPDF）を検索し、コンテンツハッシュで追跡、メタデータをローカルのSQLiteデータベースに保存し、ドキュメントの内容を別のFTSデータベースにインデックスします。
 

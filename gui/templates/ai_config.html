@@ -1,7 +1,20 @@
 {% extends "base.html" %}
 {% block title %}AI Config - ScribeFTS{% endblock %}
+{% block extra_head %}
+<style>
+.page-tab-bar { display:flex; border-bottom:2px solid var(--border,#d0d7de); margin-bottom:1.5rem; }
+.page-tab { padding:0.5rem 1.25rem; text-decoration:none; font-weight:500; color:var(--text-muted,#666); border-bottom:2px solid transparent; margin-bottom:-2px; }
+.page-tab:hover { background:var(--surface,#f5f7fa); color:var(--text,#333); }
+.page-tab.active { color:var(--primary,#6c9dc6); border-bottom-color:var(--primary,#6c9dc6); font-weight:600; }
+</style>
+{% endblock %}
+
 {% block content %}
-<h1>AI Configuration</h1>
+<div class="page-tab-bar">
+    <a href="{{ url_for('config_page') }}" class="page-tab">Config</a>
+    <a href="{{ url_for('ai_config_page') }}" class="page-tab active">API</a>
+</div>
+<h1>API Configuration</h1>
 
 <form method="post">
     <div class="card">
