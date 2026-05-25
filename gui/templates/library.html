@@ -184,6 +184,18 @@
     listSlider.addEventListener('input', applyListHeight);
     applyListHeight();
 
+    /* Sticky filter-row offset — measure the header row height and write it
+       as a CSS variable so .library-list .filter-row td can use it as top: */
+    function updateFilterRowTop() {
+        var headerRow = document.querySelector('#library-table thead tr:first-child');
+        if (headerRow) {
+            list.style.setProperty('--library-header-height',
+                Math.round(headerRow.getBoundingClientRect().height) + 'px');
+        }
+    }
+    updateFilterRowTop();
+    window.addEventListener('resize', updateFilterRowTop);
+
     /* Row height slider */
     var rowSlider = document.getElementById('row-height-slider');
     var rowLabel = document.getElementById('row-height-value');

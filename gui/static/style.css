@@ -264,6 +264,7 @@ tr:hover { background: #f5f8fc; }
 .library-list table {
     border-radius: 0;
     box-shadow: none;
+    overflow: visible; /* Allow sticky thead to work against .library-list scroll container */
 }
 
 .library-list thead th {
@@ -385,6 +386,12 @@ tr:hover { background: #f5f8fc; }
     padding: 0.3rem 0.4rem;
     background: var(--blue-light);
     border-bottom: 2px solid var(--border);
+}
+
+.library-list .filter-row td {
+    position: sticky;
+    top: var(--library-header-height, 40px);
+    z-index: 1;
 }
 
 .col-filter, .col-filter-select {
