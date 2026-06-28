@@ -2,6 +2,8 @@
 
 A lightweight CLI/GUI tool to catalog and organize documents using customizable metadata, with full-text search powered by SQLite FTS5 and automatic metadata extraction from PDFs. Scans directory trees for files (default: PDFs), tracks them by content hash, stores metadata in a local SQLite database, and indexes document content in a separate FTS database.
 
+<img width="2545" height="711" alt="SFTSScreenshot1" src="https://github.com/user-attachments/assets/0fea4b7d-5198-4261-b2ee-ee0d8227015d" />
+
 ## Features
 
 - **Configurable file scanning** — scan any directories for any file types, set via `meta_config.json`
