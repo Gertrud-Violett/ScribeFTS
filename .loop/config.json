@@ -1,0 +1,18 @@
+{
+  "branch": "loop/scribefts",
+  "base_branch": "main",
+  "max_iterations": 12,
+  "max_usd": 10.0,
+  "max_usd_per_iteration": 3.0,
+  "max_turns_per_iteration": 80,
+  "max_attempts_per_task": 3,
+  "no_progress_limit": 3,
+  "iteration_timeout_min": 30,
+  "model": "",
+  "permission_mode": "acceptEdits",
+  "open_draft_pr": true,
+  "reviewer": {
+    "enabled": true,
+    "max_review_rounds": 2
+  }
+}

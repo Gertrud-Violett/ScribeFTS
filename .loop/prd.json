@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "project": "scribefts",
+  "goal": "Baseline: keep ScribeFTS loop-ready. Owner adds feature tasks with the loop-init skill.",
+  "context": [
+    "Stack: pure Python document catalog (stdlib sqlite3 + FTS5), Flask GUI (gui/app.py), optional PyMuPDF for PDF text/metadata. No requirements file yet; .loop/init.sh installs flask, pymupdf, pytest into .venv.",
+    "Entry points: __main__.py (--cli default, --gui), CLI in bin/ScribeFTS.py, public API facade lib/api.py (ScribeFTS class). Architecture: docs/ARCHITECTURE.md; keep it consistent with code when changing structure (see CLAUDE.md).",
+    "Tests: unittest-style in tests/, run with pytest; they use temp dirs and Flask test client, no network. Never call real AI (Gemini/OpenAI), arXiv or URL-download endpoints in tests; mock urllib instead.",
+    "Runtime data lives in data/ (gitignored) and ~/.scribefts/prefs.json; tests and the loop must not write to either.",
+    "Owner targets Python 3.14 on Windows; the loop runs Python 3.12+ on Linux. Keep code cross-platform (sys.platform branches in gui/app.py). Read files with explicit encoding and robust handling for Japanese text."
+  ],
+  "verify": {
+    "commands": [
+      ".venv/bin/python -m pytest -q -p no:cacheprovider tests",
+      ".venv/bin/python __main__.py --help >/dev/null"
+    ],
+    "timeout_sec": 600
+  },
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Declare runtime and test dependencies in requirements files",
+      "description": "The repo documents deps only in the README (flask, pymupdf). Add requirements.txt (flask, pymupdf) and requirements-dev.txt (-r requirements.txt plus pytest), and make .loop/init.sh install from them instead of the hardcoded DEPS list, keeping it idempotent. Do not add other packages.",
+      "acceptance": [
+        "requirements.txt lists flask and pymupdf; requirements-dev.txt includes -r requirements.txt and pytest",
+        ".loop/init.sh installs from requirements-dev.txt and re-installs only when a requirements file is newer than .venv/.installed",
+        "rm -rf .venv && bash .loop/init.sh exits 0, and a second run exits 0 in under 10 s",
+        "README Quick Start mentions pip install -r requirements.txt",
+        "All verify commands exit 0"
+      ],
+      "depends_on": [],
+      "tier": "auto",
+      "passes": false,
+      "attempts": 0,
+      "notes": ""
+    },
+    {
+      "id": "T2",
+      "title": "Add real-PDF tests for text extraction and PDF metadata layer",
+      "description": "Current tests write fake bytes named .pdf, so the PyMuPDF paths in lib/fts.py and lib/extractor.py (Layer 1 metadata, first-page text) are untested. Generate small PDFs at test time with PyMuPDF in a temp dir (with title/author metadata and known body text, including one Japanese string) and assert on extracted values. Skip cleanly if pymupdf is not importable. No binary fixtures committed, no network.",
+      "acceptance": [
+        "New tests create PDFs in a TemporaryDirectory and assert fts text extraction returns the known body text",
+        "A test asserts the extractor's PDF-metadata layer returns the embedded title and author",
+        "A full-text search over an indexed generated PDF finds a known term",
+        "Tests are skipped (not failed) when pymupdf is unavailable",
+        "All verify commands exit 0 and the test count increases"
+      ],
+      "depends_on": [],
+      "tier": "auto",
+      "passes": false,
+      "attempts": 0,
+      "notes": ""
+    },
+    {
+      "id": "T3",
+      "title": "Replace deprecated fitz import with pymupdf",
+      "description": "PyMuPDF warns 'The fitz API is deprecated and will be removed'. lib/fts.py and lib/extractor.py use `import fitz`. Switch to `import pymupdf` (falling back to `import fitz` for old versions) without changing behaviour or the graceful-degradation path when PyMuPDF is absent.",
+      "acceptance": [
+        "grep -rn '^\\s*import fitz' lib shows only fallback imports inside try/except after an `import pymupdf` attempt",
+        "Behaviour when PyMuPDF is missing is unchanged (existing fallback returns empty text / no metadata)",
+        "`.venv/bin/python -m pytest -q -p no:cacheprovider tests 2>&1 | grep -c 'fitz API is deprecated'` prints 0 (with T2's real-PDF tests exercising the PyMuPDF paths)",
+        "All verify commands exit 0"
+      ],
+      "depends_on": [
+        "T2"
+      ],
+      "tier": "auto",
+      "passes": false,
+      "attempts": 0,
+      "notes": ""
+    }
+  ]
+}

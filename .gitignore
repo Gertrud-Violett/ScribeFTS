@@ -28,3 +28,8 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+.loop/logs/
+.loop/STOP
+.loop/status.json
+.loop/iteration-result.json
+.loop/artifacts/
